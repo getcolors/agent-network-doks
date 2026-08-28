@@ -63,6 +63,18 @@
 ;; both the human-readable version and the exact bytes.
 (def image-pinned-re #"^[^\s@]+(?::[^\s:@]+@sha256:[0-9a-f]{64}|:[^\s:@]+|@sha256:[0-9a-f]{64})$")
 (def cidr-re #"^(?:\d{1,3}\.){3}\d{1,3}/\d{1,2}$")
+
+(defn ipv4-cidr?
+  "A real IPv4 CIDR: shape, octets 0-255, prefix 0-32. The shape regex alone
+  admits 999.999.999.999/99, which would fail late — after infrastructure
+  exists — instead of at validation."
+  [s]
+  (boolean
+   (when (re-matches cidr-re (str s))
+     (let [[addr prefix] (clojure.string/split (str s) #"/")
+           octets (map #(Long/parseLong %) (clojure.string/split addr #"\."))]
+       (and (every? #(<= 0 % 255) octets)
+            (<= 0 (Long/parseLong prefix) 32))))))
 (def version-re #"^[0-9]+\.[0-9]+\.[0-9]+$")
 ;; A Debian package version: upstream plus revision, e.g. 3.0.34-1.
 (def deb-version-re #"^[0-9][0-9A-Za-z.+~:-]*$")
@@ -283,7 +295,7 @@
     (let [srcs (:digitalocean-http-sources opts)]
       (when (and (not (missing? srcs))
                  (or (not (sequential? srcs)) (empty? srcs)
-                     (some #(not (re-matches cidr-re (str %))) srcs)))
+                     (some #(not (ipv4-cidr? %)) srcs)))
         [":digitalocean-http-sources must be a non-empty list of IPv4 CIDRs"]))
     ;; The override is validated against the provider's rules rather than
     ;; passed through unread (Compute Name Standard §2).

@@ -95,3 +95,8 @@
 (deftest gost-pin-shape
   (is (seq (validate/state-errors (assoc (fixture) :agent-network-gost-sha256 "abc"))))
   (is (seq (validate/state-errors (assoc (fixture) :agent-network-gost-version "3.2")))))
+
+(deftest http-sources-are-real-cidrs
+  (is (= [] (validate/state-errors (assoc (fixture) :digitalocean-http-sources ["10.0.0.0/8" "0.0.0.0/0"]))))
+  (doseq [bad [["999.999.999.999/99"] ["1.2.3.4/33"] ["1.2.3.256/8"] ["::/0"] ["1.2.3.4"]]]
+    (is (seq (validate/state-errors (assoc (fixture) :digitalocean-http-sources bad))) (pr-str bad))))

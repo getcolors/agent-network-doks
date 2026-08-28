@@ -88,7 +88,11 @@ apply() { # apply FILE — server-side dry run first, then the real thing
 # Recorded in the profile state after the first pass so re-converges skip the
 # ~1 minute it costs.
 
-if [[ ! -f $STATE/canary-passed ]]; then
+# The marker is CLUSTER-bound (kube-system UID), not workstation-bound: a
+# replaced cluster under the same profile must re-prove enforcement before
+# any secret lands on it.
+cluster_uid=$(kubectl get namespace kube-system -o jsonpath='{.metadata.uid}')
+if [[ "$(cat "$STATE/canary-passed" 2>/dev/null)" != "$cluster_uid" ]]; then
   log "canary: proving NetworkPolicy enforcement (default-deny + single allow)"
   # The namespace is applied for real FIRST: a server-side dry run cannot
   # validate namespaced objects whose namespace only exists later in the
@@ -190,7 +194,7 @@ CANARY
     exit 1
   fi
   kubectl delete namespace "$CANARY" --ignore-not-found --timeout=120s >/dev/null || true
-  touch "$STATE/canary-passed"
+  printf '%s' "$cluster_uid" > "$STATE/canary-passed"
   log "canary passed: default-deny holds, the single allow admits exactly its path"
 fi
 
@@ -300,6 +304,13 @@ in_cidr() { # in_cidr IP CIDR
 server_ip=$(kubectl -n "$GW" get pod -l app=netbird-server -o jsonpath='{.items[0].status.podIP}')
 if ! in_cidr "$server_ip" "$POD_CIDR"; then
   log "FATAL: pod address $server_ip is outside the read-back cluster subnet $POD_CIDR"
+  exit 1
+fi
+SVC_CIDR=$(cat "$STATE/service-subnet" 2>/dev/null || true)
+[[ -n $SVC_CIDR ]] || { log "FATAL: no read-back service subnet; did the infrastructure stage run?"; exit 1; }
+kube_svc_ip=$(kubectl -n default get svc kubernetes -o jsonpath='{.spec.clusterIP}')
+if ! in_cidr "$kube_svc_ip" "$SVC_CIDR"; then
+  log "FATAL: Service address $kube_svc_ip is outside the read-back service subnet $SVC_CIDR"
   exit 1
 fi
 

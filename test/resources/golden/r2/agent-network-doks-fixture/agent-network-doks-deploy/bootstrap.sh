@@ -62,6 +62,21 @@ persist_state() { # persist_state FILE VALUE
 }
 
 PAT=$(cluster_secret an-pat)
+
+# A stored credential that has expired or been revoked would otherwise kill
+# the first authenticated call under set -e with a bare curl error. Detect
+# it up front and name the recovery, which is the same as the
+# already-set-up wall below: the one-time setup PAT cannot be reissued.
+if [[ -n $PAT ]]; then
+  code=$(curl -s -o /dev/null -w '%{http_code}' "$API/users" -H "Authorization: Token $PAT" || true)
+  if [[ ${code:-000} == 401 ]]; then
+    log "FATAL: the stored automation credential is expired or revoked."
+    log "  Recover by creating a PAT in the dashboard as $(jq -r .admin_email "$DESIRED") and storing it:"
+    log "  printf '%s' TOKEN | kubectl -n $GW create secret generic an-pat --from-file=value=/dev/stdin --dry-run=client -o yaml | kubectl apply -f -"
+    exit 1
+  fi
+fi
+
 api() { # api METHOD PATH [BODY]
   local method=$1 path=$2 body=${3:-}
   if [[ -n $body ]]; then

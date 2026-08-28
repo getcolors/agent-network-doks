@@ -161,11 +161,19 @@
         (when (and (seq names) (not (some #{target} names)))
           (let [tier (subscription-tier opts)
                 requested (str (:digitalocean-registry-tier opts))]
-            (if (and (= tier "professional") (= requested "professional"))
-              nil
+            (cond
+              (not (and (= tier "professional") (= requested "professional")))
               (str "the account already has a registry (" (str/join ", " names)
                    ") and the " (or tier "current") " subscription does not allow another; "
-                   "adopt it instead: set digitalocean-registry-name and remove digitalocean-registry-tier"))))))))
+                   "adopt it instead: set digitalocean-registry-name and remove digitalocean-registry-tier")
+
+              ;; Professional's documented registry cap; enforced here so the
+              ;; failure is free rather than a half-applied stack.
+              (>= (count names) 10)
+              (str "the account already holds " (count names)
+                   " registries — the professional cap; adopt one instead")
+
+              :else nil)))))))
 
 (defn output-params [result]
   (some-> (get-in result [:tofu/outputs :params]) clojure.walk/keywordize-keys))
@@ -482,7 +490,11 @@
   (when (= :delete (:green/event opts))
     (doseq [f [(kubeconfig-path opts)]]
       (let [file (io/file f)] (when (.exists file) (io/delete-file file))))
+    ;; lego holds the ACME account key and issued certificate private key —
+    ;; dead credentials once the deployment is gone, removed like the
+    ;; kubeconfig.
     (doseq [dir [(io/file (state-dir opts))
+                 (io/file (lego-dir opts))
                  (io/file (profile-dir opts) "proofs")]]
       (when (.exists dir)
         (doseq [f (reverse (file-seq dir))] (io/delete-file f true)))))

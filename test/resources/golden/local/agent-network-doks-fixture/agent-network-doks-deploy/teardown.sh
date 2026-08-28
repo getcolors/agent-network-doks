@@ -14,11 +14,13 @@ BLD=agent-network-build
 
 log() { echo "agent-network-doks-teardown: $*" >&2; }
 
+CLUSTER_UP=1
 if ! kubectl version --request-timeout=15s >/dev/null 2>&1; then
-  log "cluster does not answer; leaving teardown to the infrastructure destroy"
-  exit 0
+  log "cluster does not answer; skipping in-cluster teardown (the provider-side cleanup below still runs)"
+  CLUSTER_UP=0
 fi
 
+if [[ $CLUSTER_UP == 1 ]]; then
 # Captured BEFORE anything is deleted: the CSI volume handles and the LB
 # address are what the DigitalOcean API is asked to confirm absent afterwards —
 # Kubernetes objects disappearing proves nothing about the paid resources
@@ -52,6 +54,7 @@ done
 
 log "deleting the gateway namespace"
 kubectl delete namespace "$GW" --ignore-not-found --timeout=300s || true
+fi
 
 # The provider is the authority on what still bills. Best-effort (the tofu
 # destroy that follows removes the cluster either way), but leftovers are
@@ -60,7 +63,7 @@ kubectl delete namespace "$GW" --ignore-not-found --timeout=300s || true
 # resource counts as gone; anything else is surfaced as unverified.
 do_api() { curl -fsS -H "Authorization: Bearer ${COLORS_PAR_DO_TOKEN:-}" "https://api.digitalocean.com/v2$1"; }
 if [[ -n ${COLORS_PAR_DO_TOKEN:-} ]]; then
-  if [[ -n ${volume_ids:-} ]]; then
+  if [[ $CLUSTER_UP == 1 && -n ${volume_ids:-} ]]; then
     verdict="unverified"
     for _ in $(seq 1 30); do
       if live=$(do_api "/volumes?per_page=200" 2>/dev/null | jq -r '.volumes[].id' 2>/dev/null); then
@@ -75,7 +78,7 @@ if [[ -n ${COLORS_PAR_DO_TOKEN:-} ]]; then
       *) log "WARNING: could not verify volume deletion against the DigitalOcean API — check manually" ;;
     esac
   fi
-  if [[ -n ${lb_ip:-} ]]; then
+  if [[ $CLUSTER_UP == 1 && -n ${lb_ip:-} ]]; then
     verdict="unverified"
     for _ in $(seq 1 30); do
       if lbs=$(do_api "/load_balancers?per_page=200" 2>/dev/null); then
