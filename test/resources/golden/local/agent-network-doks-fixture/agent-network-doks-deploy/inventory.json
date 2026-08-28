@@ -1,0 +1,5 @@
+{
+  "host" : "agent-network-doks.example.com",
+  "profile" : "agent-network-doks-fixture",
+  "compute_name" : "agent-network-doks-fixture"
+}

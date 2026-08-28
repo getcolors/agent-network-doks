@@ -1,0 +1,22 @@
+{
+  "resource" : {
+    "cloudflare_dns_record" : {
+      "agent_network_doks" : {
+        "content" : "192.0.2.10",
+        "name" : "agent-network-doks.example.com",
+        "proxied" : false,
+        "ttl" : 60,
+        "type" : "A",
+        "zone_id" : "${data.cloudflare_zone.zone.id}"
+      },
+      "agent_network_doks_wildcard" : {
+        "content" : "192.0.2.10",
+        "name" : "*.agent-network-doks.example.com",
+        "proxied" : false,
+        "ttl" : 60,
+        "type" : "A",
+        "zone_id" : "${data.cloudflare_zone.zone.id}"
+      }
+    }
+  }
+}
