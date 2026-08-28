@@ -42,8 +42,18 @@ api() { curl -fsS -X "$1" "$API$2" -H "Authorization: Token $PAT"; }
 
 # --- the run facts the manifests need ----------------------------------------
 
-endpoint=$(api GET /agent-network/settings | jq -r '.endpoint // empty')
-[[ -n $endpoint ]] || { log "FATAL: no endpoint; run bootstrap first"; exit 1; }
+# Bounded retry: this is the first management call after a converge OR a
+# server restart (the disruption suite reconciles through here), and a
+# freshly rolled server can answer 502 through Traefik for a short window
+# while its management plane warms — Ready is the kubelet's opinion, not
+# the gateway's.
+endpoint=""
+for _ in $(seq 1 30); do
+  endpoint=$(api GET /agent-network/settings 2>/dev/null | jq -r '.endpoint // empty' || true)
+  [[ -n $endpoint ]] && break
+  sleep 5
+done
+[[ -n $endpoint ]] || { log "FATAL: no endpoint answered; run bootstrap first"; exit 1; }
 printf '%s' "$endpoint" > "$STATE/endpoint"
 
 traefik_internal=$(kubectl -n "$GW" get svc traefik-internal -o jsonpath='{.spec.clusterIP}')

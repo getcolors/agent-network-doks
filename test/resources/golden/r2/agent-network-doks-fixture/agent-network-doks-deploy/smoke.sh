@@ -157,8 +157,17 @@ gate_isolation() {
       exit 1
     fi
   done
-  code=$(socks_code "https://$PROXY_OVERLAY_IP/")
-  if [[ $code == 000 ]]; then
+  # The positive control retries, bounded: right after a client-pod roll the
+  # peer path can still be settling (ICE renegotiation), and a transient miss
+  # on the control must not condemn a healthy converge — while the denial
+  # probes above stay single-shot strict (any success is an immediate fail).
+  ok=0
+  for _ in $(seq 1 6); do
+    code=$(socks_code "https://$PROXY_OVERLAY_IP/")
+    [[ $code != 000 ]] && { ok=1; break; }
+    sleep 5
+  done
+  if [[ $ok != 1 ]]; then
     log "FAIL: the overlay address is not reachable through SOCKS5; the denials above are breakage"
     exit 1
   fi

@@ -90,14 +90,18 @@ apply() { # apply FILE — server-side dry run first, then the real thing
 
 if [[ ! -f $STATE/canary-passed ]]; then
   log "canary: proving NetworkPolicy enforcement (default-deny + single allow)"
-  cat > "${TMPDIR:-/tmp}/an-canary.yaml" <<CANARY
+  # The namespace is applied for real FIRST: a server-side dry run cannot
+  # validate namespaced objects whose namespace only exists later in the
+  # same document.
+  kubectl apply -f - <<CANARYNS >/dev/null
 apiVersion: v1
 kind: Namespace
 metadata:
   name: $CANARY
   labels:
     pod-security.kubernetes.io/enforce: baseline
----
+CANARYNS
+  cat > "${TMPDIR:-/tmp}/an-canary.yaml" <<CANARY
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
