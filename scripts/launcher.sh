@@ -5,6 +5,8 @@ launcher="$root/skills/package-agent-network-doks-green/green"
 grep -q 'io.github.getcolors.agent-network-doks.workflow/workflow' "$launcher"
 grep -q 'def \^:private agent-network-doks-sha' "$launcher"
 [[ -L "$root/green/green" ]] && [[ $(readlink "$root/green/green") == ../skills/package-agent-network-doks-green/green ]]
+[[ -L "$root/red/red" ]] && [[ $(readlink "$root/red/red") == ../skills/package-agent-network-doks-red/red ]]
+[[ -L "$root/blue/blue" ]] && [[ $(readlink "$root/blue/blue") == ../skills/package-agent-network-doks-blue/blue ]]
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 cp "$launcher" "$tmp/green"; chmod +x "$tmp/green"
 sed "s#WORKDIR#.colors#" "$root/test/fixtures/colors.yml" > "$tmp/colors.yml"
@@ -21,11 +23,19 @@ mkdir -p "$tmp/nested/path"
 out=$(cd "$tmp" && AGENT_NETWORK_DOKS_LIB_ROOT="$root" COLORS_PAR_PROFILE=wrong ./green build 2>&1 || true)
 grep -q COLORS_PAR_PROFILE <<<"$out"
 [[ ! -d "$tmp/.colors/wrong" ]]
-# While unpinned, a standalone copy refuses with an actionable message.
-if grep -q '(def \^:private agent-network-doks-sha nil)' "$launcher"; then
-  mkdir -p "$tmp/bare"; cp "$launcher" "$tmp/bare/green"; chmod +x "$tmp/bare/green"
-  sed "s#WORKDIR#.colors#" "$root/test/fixtures/colors.yml" > "$tmp/bare/colors.yml"
-  out=$( (cd "$tmp/bare" && ./green build 2>&1) || true )
-  grep -q 'AGENT_NETWORK_DOKS_LIB_ROOT' <<<"$out"
-fi
+# The red and blue payloads: same copied-out build through the working-tree
+# override, and — while unpinned — the same actionable refusal standalone.
+for colour in red blue; do
+  payload="$root/skills/package-agent-network-doks-$colour/$colour"
+  cp "$payload" "$tmp/$colour"; chmod +x "$tmp/$colour"
+  rm -rf "$tmp/.colors"
+  (cd "$tmp" && AGENT_NETWORK_DOKS_LIB_ROOT="$root" "./$colour" build >/dev/null)
+  [[ -f "$tmp/.colors/agent-network-doks-fixture/agent-network-doks-infrastructure/registry.tf" ]]
+  [[ -f "$tmp/.colors/agent-network-doks-fixture/agent-network-doks-deploy/converge.sh" ]]
+  if grep -qE '"package-agent-network-doks-red": null,|^# dependencies = \[\]$' "$payload"; then
+    mkdir -p "$tmp/bare-$colour"; cp "$payload" "$tmp/bare-$colour/$colour"; chmod +x "$tmp/bare-$colour/$colour"
+    out=$( (cd "$tmp/bare-$colour" && "./$colour" build 2>&1) || true )
+    grep -q 'AGENT_NETWORK_DOKS_LIB_ROOT' <<<"$out"
+  fi
+done
 echo 'launcher: all checks passed'

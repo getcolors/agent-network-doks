@@ -51,10 +51,11 @@ npx skills add getcolors/agent-network-doks@package-agent-network-doks-green
 ./green delete             # guarded; needs a one-run override
 ```
 
-This package is **green only** (Clojure/Babashka,
-`package-agent-network-doks-green`), like `walter`; `bb golden` renders the
-fixture across both state backends and diffs byte for byte in place of a
-cross-colour parity harness.
+Three implementations render byte-identical output from the same
+`colors.yml`: Green (Clojure/Babashka, `package-agent-network-doks-green`),
+Red (TypeScript/Bun, `package-agent-network-doks-red`), and Blue (Python/uv,
+`package-agent-network-doks-blue`). `./scripts/parity.sh` holds them to that,
+byte for byte, across both state backends.
 
 Credentials live in a gitignored `.envrc.private` as `COLORS_PAR_*`
 variables; see
@@ -69,9 +70,12 @@ proving everything NetBird owns with nothing billable.
 cd green && bb test           # validation, tools, workflow
 cd green && bb golden         # two backends (local, r2), byte for byte
 cd green && bb golden:accept  # after an intended change — read the diff first
-./scripts/golden.sh           # same, from the repository root
-./scripts/launcher.sh         # launcher self-checks
-cd green && bb pin            # stamp the payload after a push
+cd red && bun test && bun run typecheck
+cd blue && uv sync && uv run pytest
+./scripts/golden.sh           # same as bb golden, from the repository root
+./scripts/parity.sh           # three colours, both state backends, byte for byte
+./scripts/launcher.sh         # launcher self-checks, all three payloads
+cd green && bb pin            # stamp the three payloads after a push
 ```
 
 The first consumer is
