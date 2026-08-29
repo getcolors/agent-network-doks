@@ -1,15 +1,17 @@
 #!/usr/bin/env -S uv run --script
 # /// script
 # requires-python = ">=3.11"
-# dependencies = []
+# dependencies = ["package-agent-network-doks-blue", "blue"]
+#
+# [tool.uv.sources]
+# package-agent-network-doks-blue = { git = "https://github.com/getcolors/agent-network-doks.git", rev = "3ee7eada08b8af70f965fd23f02370579a81d389", subdirectory = "blue" }
+# blue = { git = "https://github.com/getcolors/blue.git", rev = "290f313ead5ca162875c33a049c880da017eae09" }
 # ///
 #
 # Managed by `bb pin` — do not edit by hand, and never invent a SHA.
 #
-# UNPINNED: this launcher has not been stamped by `bb pin`, which cannot run
-# until the agent-network-doks repository has been pushed. Until then it runs
-# only through a working tree:
-# AGENT_NETWORK_DOKS_LIB_ROOT=/path/to/agent-network-doks
+# Stamped by `bb pin`. AGENT_NETWORK_DOKS_LIB_ROOT=/path/to/agent-network-doks
+# still overrides the pin with a working tree.
 """Thin launcher for package-agent-network-doks-blue.
 
 This file is both the skill payload and the repository entry point —
