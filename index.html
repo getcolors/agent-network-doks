@@ -28,6 +28,7 @@ chmod +x green
   <p>Build renders reproducible output and dry-run walks the workflow without provider side effects. Real creation and deletion require explicit authorization. Equivalent Red and Blue skills ship <code>red</code> and <code>blue</code> launchers rendering byte-identical output.</p>
 
   <h2>Architecture</h2>
+  <p><a href="docs/architecture.html">Explore the interactive architecture diagram</a> for the public edge, gateway namespace, isolated application path, and keyless model access flow.</p>
   <div class="grid">
     <div class="card"><h3>Compute</h3><p>One DOKS cluster (managed control plane, single non-HA, one node pool) and a DigitalOcean Container Registry — created and profile-named, or adopted by name (registries are account-scoped and tier-limited). No SSH anywhere: every operation goes through the generated kubeconfig.</p></div>
     <div class="card"><h3>DNS &amp; TLS</h3><p>Two <strong>unproxied</strong> Cloudflare <code>A</code> records at the load balancer: the base name and its wildcard — the endpoint hostname is a label management mints at bootstrap. One lego DNS-01 order carries <strong>both SANs</strong>; Traefik terminates the base name from that pair and hands endpoint subdomains to the private reverse proxy over an SNI passthrough with PROXY protocol v2. Nothing runs per-name ACME — the pinned build's responder is defective, and the package routes around it.</p></div>

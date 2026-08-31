@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "NetBird Agent Network on DigitalOcean Kubernetes",
+    "locale": "en",
+    "output": "architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/getcolors/agent-network-doks",
+      "revision": "8b0192571569186ed17dcc239097ef1b96324bc3"
+    },
+    "viewBox": [1380, 600]
+  },
+  "components": [
+    {
+      "id": "cloudflare_dns",
+      "type": "external",
+      "label": "Cloudflare DNS",
+      "sublabel": "base + wildcard A records",
+      "pos": [40, 75],
+      "size": [160, 66],
+      "sources": [{"path": "CLAUDE.md", "line": 8, "label": "DNS contract"}]
+    },
+    {
+      "id": "regional_lb",
+      "type": "cloud",
+      "label": "DigitalOcean LB",
+      "sublabel": "regional · TCP mode",
+      "pos": [260, 75],
+      "size": [160, 66],
+      "sources": [{"path": "CLAUDE.md", "line": 40, "label": "LB contract"}]
+    },
+    {
+      "id": "traefik",
+      "type": "security",
+      "label": "Traefik",
+      "sublabel": "TLS ingress + passthrough",
+      "pos": [510, 75],
+      "size": [160, 66],
+      "sources": [{"path": "CLAUDE.md", "line": 11, "label": "Gateway ingress"}]
+    },
+    {
+      "id": "netbird_server",
+      "type": "backend",
+      "label": "netbird-server",
+      "sublabel": "management · signal · relay",
+      "pos": [790, 25],
+      "size": [175, 70],
+      "sources": [{"path": "CLAUDE.md", "line": 12, "label": "Control plane"}]
+    },
+    {
+      "id": "dashboard",
+      "type": "frontend",
+      "label": "NetBird Dashboard",
+      "sublabel": "agent-network-only mode",
+      "pos": [790, 145],
+      "size": [175, 66],
+      "sources": [{"path": "CLAUDE.md", "line": 13, "label": "Dashboard mode"}]
+    },
+    {
+      "id": "server_state",
+      "type": "database",
+      "label": "Server Datastore",
+      "sublabel": "CSI persistent volume",
+      "pos": [1100, 25],
+      "size": [160, 66],
+      "sources": [{"path": "CLAUDE.md", "line": 12, "label": "Persistent state"}]
+    },
+    {
+      "id": "reverse_proxy",
+      "type": "security",
+      "label": "NetBird Reverse Proxy",
+      "sublabel": "private endpoint gateway",
+      "pos": [790, 240],
+      "size": [180, 66],
+      "sources": [{"path": "CLAUDE.md", "line": 13, "label": "Private proxy"}]
+    },
+    {
+      "id": "model_provider",
+      "type": "external",
+      "label": "LLM Provider",
+      "sublabel": "upstream model API",
+      "pos": [1100, 240],
+      "size": [160, 66],
+      "sources": [{"path": "CLAUDE.md", "line": 4, "label": "Keyless access"}]
+    },
+    {
+      "id": "registry",
+      "type": "cloud",
+      "label": "DO Container Registry",
+      "sublabel": "created or adopted",
+      "pos": [260, 455],
+      "size": [180, 66],
+      "sources": [{"path": "CLAUDE.md", "line": 22, "label": "Registry modes"}]
+    },
+    {
+      "id": "kaniko",
+      "type": "backend",
+      "label": "Kaniko Build",
+      "sublabel": "ephemeral write credential",
+      "pos": [40, 455],
+      "size": [170, 66],
+      "sources": [{"path": "CLAUDE.md", "line": 13, "label": "In-cluster build"}]
+    },
+    {
+      "id": "netbird_client",
+      "type": "security",
+      "label": "NetBird Client Pod",
+      "sublabel": "netstack · SOCKS5 · no TUN",
+      "pos": [790, 455],
+      "size": [180, 70],
+      "sources": [{"path": "CLAUDE.md", "line": 14, "label": "Client isolation"}]
+    },
+    {
+      "id": "isolated_agent",
+      "type": "backend",
+      "label": "Isolated Agent Pod",
+      "sublabel": "headless Claude Code",
+      "pos": [520, 455],
+      "size": [175, 70],
+      "sources": [{"path": "CLAUDE.md", "line": 15, "label": "Agent workload"}]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "DigitalOcean · DOKS cluster",
+      "wraps": ["traefik", "netbird_server", "dashboard", "server_state", "reverse_proxy", "kaniko", "netbird_client", "isolated_agent"],
+      "pad": 24
+    },
+    {
+      "kind": "security-group",
+      "label": "Gateway namespace",
+      "wraps": ["traefik", "netbird_server", "dashboard", "server_state", "reverse_proxy"],
+      "pad": 15
+    },
+    {
+      "kind": "security-group",
+      "label": "Restricted application namespace",
+      "wraps": ["netbird_client", "isolated_agent"],
+      "pad": 16
+    }
+  ],
+  "connections": [
+    {"id": "dns_to_lb", "from": "cloudflare_dns", "to": "regional_lb", "label": "A records", "variant": "emphasis"},
+    {"id": "lb_to_traefik", "from": "regional_lb", "to": "traefik", "label": "TCP 80 / 443", "variant": "security"},
+    {"id": "traefik_to_server", "from": "traefik", "to": "netbird_server", "label": "HTTPS control plane", "variant": "emphasis"},
+    {"id": "traefik_to_dashboard", "from": "traefik", "to": "dashboard", "label": "HTTPS UI", "labelAt": [670, 150]},
+    {"id": "traefik_to_proxy", "from": "traefik", "to": "reverse_proxy", "label": "subdomain TLS passthrough", "variant": "security", "labelAt": [730, 220]},
+    {"id": "server_to_state", "from": "netbird_server", "to": "server_state", "label": "persistent state"},
+    {"id": "agent_to_client", "from": "isolated_agent", "to": "netbird_client", "label": "SOCKS5 only", "variant": "security"},
+    {"id": "client_to_proxy", "from": "netbird_client", "to": "reverse_proxy", "label": "NetBird overlay", "variant": "emphasis"},
+    {"id": "proxy_to_provider", "from": "reverse_proxy", "to": "model_provider", "label": "authenticated HTTPS", "variant": "security"},
+    {"id": "kaniko_to_registry", "from": "kaniko", "to": "registry", "label": "push profile image", "variant": "dashed", "labelAt": [255, 540]},
+    {"id": "registry_to_agent", "from": "registry", "to": "isolated_agent", "label": "read-only image pull", "variant": "dashed", "labelAt": [480, 544]}
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Two Isolation Boundaries",
+      "items": [
+        "Kubernetes NetworkPolicy defaults the application namespace to deny",
+        "The agent has no network interface path except localhost SOCKS5",
+        "A first-converge Cilium canary proves enforcement before secrets enter the cluster"
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Keyless Model Access",
+      "items": [
+        "The agent reaches a policy-gated endpoint over the NetBird overlay",
+        "Provider credentials terminate at the private reverse proxy, not in the agent pod",
+        "The model provider receives authenticated HTTPS from the gateway"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "DigitalOcean Ownership",
+      "items": [
+        "OpenTofu owns the DOKS cluster and optionally the account-scoped registry",
+        "The regional load balancer exposes only TCP 80 and 443 through Traefik",
+        "Registry write credentials are ephemeral; workload pulls use a rotated read-only secret"
+      ]
+    }
+  ]
+}
