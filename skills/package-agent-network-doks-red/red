@@ -41,7 +41,7 @@ import { homedir } from "node:os";
 // `package-agent-network-doks-red` and break the development symlink at
 // red/red.
 const PINS = {
-  "package-agent-network-doks-red": "github:getcolors/agent-network-doks#3ee7eada08b8af70f965fd23f02370579a81d389",
+  "package-agent-network-doks-red": "github:getcolors/agent-network-doks#8e4cbac87b9b2b75b6fea655218850e9f032fa98",
 };
 
 // PINS is the only source of versions, as green's inline SHA and blue's PEP

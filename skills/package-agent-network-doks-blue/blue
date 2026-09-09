@@ -4,7 +4,7 @@
 # dependencies = ["package-agent-network-doks-blue", "blue"]
 #
 # [tool.uv.sources]
-# package-agent-network-doks-blue = { git = "https://github.com/getcolors/agent-network-doks.git", rev = "3ee7eada08b8af70f965fd23f02370579a81d389", subdirectory = "blue" }
+# package-agent-network-doks-blue = { git = "https://github.com/getcolors/agent-network-doks.git", rev = "8e4cbac87b9b2b75b6fea655218850e9f032fa98", subdirectory = "blue" }
 # blue = { git = "https://github.com/getcolors/blue.git", rev = "290f313ead5ca162875c33a049c880da017eae09" }
 # ///
 #
