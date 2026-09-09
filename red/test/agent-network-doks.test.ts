@@ -1,3 +1,4 @@
+import {plan_managed_kubernetes} from "colors-compute-red";
 // The port of green's tools-test, validate-test and workflow-test: the three
 // colours assert the same behaviour over the same fixture.
 
@@ -65,7 +66,7 @@ describe("deploy rendering", () => {
     readFileSync(written.find((p) => p.endsWith(suffix))!, "utf8");
 
   test("every deploy file renders", () => {
-    expect(written.length).toBe(tools.deployFiles.length + 2);
+    expect(written.length).toBe(tools.deployFiles.length + 4);
   });
   test("the host reaches the scripts and manifests", () => {
     expect(slurpTarget("bootstrap.sh")).toContain("agent-network-doks.example.com");
@@ -95,9 +96,9 @@ describe("deploy rendering", () => {
   });
   test("the LB is pinned to the regional TCP type with enforced sources", () => {
     const svc = slurpTarget("manifests/traefik.yaml");
-    expect(svc).toContain('do-loadbalancer-protocol: "tcp"');
-    expect(svc).toContain('do-loadbalancer-type: "REGIONAL"');
-    expect(svc).toContain('do-loadbalancer-name: "agent-network-doks-fixture"');
+    expect(svc).toContain('do-loadbalancer-protocol":"tcp"');
+    expect(svc).toContain('do-loadbalancer-type":"REGIONAL"');
+    expect(svc).toContain('do-loadbalancer-name":"agent-network-doks-fixture"');
     expect(svc).toContain("loadBalancerSourceRanges: [0.0.0.0/0]");
   });
   test("CIDR-derived values stay placeholders for the read-back subnet", () => {
@@ -135,14 +136,15 @@ describe("cidr splitting", () => {
 
 describe("infrastructure templates", () => {
   const res = (name: string) =>
-    readFileSync(join(import.meta.dir, "..", "resources", "tools", "infrastructure", name), "utf8");
+    readFileSync(join(import.meta.dir, "..", "resources", "tools", "registry", name), "utf8");
   test("the kubeconfig contract is DO-shaped, HA explicit, subnets never inputs", () => {
-    const tf = res("main.tf");
-    expect(tf).toContain("kube_config[0].raw_config");
-    expect(tf).toContain("ha = false");
-    expect(tf).not.toContain("cluster_subnet =");
-    expect(tf).not.toContain("service_subnet =");
-    expect(tf).toContain('output "cluster-subnet"');
+    const document = plan_managed_kubernetes(fixture()).documents["managed-kubernetes.tf.json"];
+    const cluster = document.resource.digitalocean_kubernetes_cluster.cluster;
+    expect(cluster.ha).toBe(false);
+    expect(cluster).not.toHaveProperty("cluster_subnet");
+    expect(cluster).not.toHaveProperty("service_subnet");
+    expect(document.output.kubeconfig_b64.sensitive).toBe(true);
+    expect(document.output.kubeconfig_b64.value).toContain("kube_config[0].raw_config");
   });
   test("both registry modes: credentials hang off the registry reference and rotate", () => {
     for (const f of ["registry-create.tf", "registry-adopt.tf"]) {
@@ -291,7 +293,7 @@ function chain(event: string): string[] {
 describe("workflow", () => {
   test("create ordering: cluster → workloads → dns → certificate → bootstrap → agent → gates", () => {
     expect(chain("create")).toEqual([
-      "agent-network-doks/infrastructure", "agent-network-doks/deploy",
+      "agent-network-doks/infrastructure", "agent-network-doks/registry", "agent-network-doks/deploy",
       "agent-network-doks/dns", "agent-network-doks/certificate",
       "agent-network-doks/bootstrap", "agent-network-doks/agent",
       "agent-network-doks/acceptance",
@@ -299,7 +301,7 @@ describe("workflow", () => {
   });
   test("delete ordering: in-cluster teardown precedes the infrastructure destroy", () => {
     expect(chain("delete")).toEqual([
-      "agent-network-doks/teardown", "agent-network-doks/dns",
+      "agent-network-doks/load-managed", "agent-network-doks/teardown", "agent-network-doks/dns", "agent-network-doks/registry",
       "agent-network-doks/infrastructure", "agent-network-doks/cleanup",
     ]);
   });
@@ -320,7 +322,7 @@ describe("workflow", () => {
     const out = await startStep(opts, {});
     expect(out["red/exit"]).toBe(2);
     expect(String(out["red/err"])).toContain(":agent-network-host");
-    expect(String(out["red/err"])).toContain(":doks-version");
+    expect(String(out["red/err"])).toContain("missing managed Kubernetes settings");
   });
   test("the profile guard refuses the overlay", async () => {
     const out = await startStep({ ...fixture(), "red/event": "build" },
@@ -337,4 +339,24 @@ describe("workflow", () => {
     expect(out["red/exit"]).toBe(2);
     expect(String(out["red/err"])).toContain("COLORS_PAR_COMPUTE_PREVENT_DESTROY");
   });
+});
+
+test('delete restores recorded registry ownership and refuses unverified state', async()=> {
+ const {mkdtempSync,rmSync,existsSync,statSync}=await import('node:fs');
+ const dir=mkdtempSync(join(tmpdir(),'doks-registry-read-'));
+ try {
+  const opts:Opts={...fixture(),workdir:dir};
+  const params={kind:'application-registry',provider:'digitalocean',profile:opts.profile,repository:opts.profile,name:'recorded-registry',adopted:true};
+  const result=await tools.loadRegistryFacts(opts,async(_opts,key)=>{
+   expect(key).toBe(String(opts.profile)+'/agent-network-doks-registry.tfstate');
+   return {status:'present',params};
+  });
+  expect(result['red/exit']??0).toBe(0);
+  expect(readFileSync(tools.registryEnvPath(opts),'utf8')).toContain("REGISTRY_NAME='recorded-registry'");
+  expect(statSync(tools.registryEnvPath(opts)).mode&0o777).toBe(0o600);
+  const bad={...opts,workdir:join(dir,'bad')};
+  const rejected=await tools.loadRegistryFacts(bad,async()=>({status:'present',params:{...params,profile:'other'}}));
+  expect(rejected['red/exit']).toBe(1);
+  expect(existsSync(tools.registryEnvPath(bad))).toBe(false);
+ } finally {rmSync(dir,{recursive:true,force:true});}
 });

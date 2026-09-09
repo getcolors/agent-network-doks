@@ -10,7 +10,7 @@ set -euo pipefail
 # references to it).
 #
 # Two variants, because the goldens have a second axis: the same fixture is
-# rendered under the local state backend and again under r2, the way golden.sh
+# rendered under the S3 state backend and again under r2, the way golden.sh
 # produces its trees — COLORS_PAR_PROVIDER_BACKEND overlaid on the one
 # fixture. Parity means every backend.tf.json agrees in every colour.
 #
@@ -27,7 +27,7 @@ build_variant() {
   local state="$tmp/$variant/colors.yml"
   mkdir -p "$tmp/$variant"
   for colour in green red blue; do
-    sed "s#WORKDIR#$tmp/$variant/$colour#" "$root/test/fixtures/colors.yml" > "$state"
+    sed "s#WORKDIR#$tmp/$variant/$colour#" "${PARITY_FIXTURE:-$root/test/fixtures/colors.yml}" > "$state"
     case $colour in
       green) (cd "$root/green" && env AGENT_NETWORK_DOKS_LIB_ROOT="$root" "$@" \
                 ./green build -f "$state" >/dev/null) ;;
@@ -41,8 +41,10 @@ build_variant() {
   diff -r "$tmp/$variant/green" "$tmp/$variant/blue"
 }
 
-build_variant local COLORS_PAR_PROVIDER_BACKEND=local
+build_variant s3 COLORS_PAR_PROVIDER_BACKEND=s3
 build_variant r2 COLORS_PAR_PROVIDER_BACKEND=r2
+PARITY_FIXTURE="$root/test/fixtures/colors-adopt.yml" build_variant s3-adopt COLORS_PAR_PROVIDER_BACKEND=s3
+PARITY_FIXTURE="$root/test/fixtures/colors-adopt.yml" build_variant r2-adopt COLORS_PAR_PROVIDER_BACKEND=r2
 
 diff -r "$root/green/src/resources/io/github/getcolors/agent-network-doks" "$root/red/resources"
 diff -r "$root/green/src/resources/io/github/getcolors/agent-network-doks" "$root/blue/src/package_agent_network_doks_blue/resources"

@@ -18,7 +18,7 @@ def chain(event):
 def test_create_ordering():
     # cluster → workloads → dns → certificate → bootstrap → agent → gates
     assert chain("create") == [
-        "agent-network-doks/infrastructure", "agent-network-doks/deploy",
+        "agent-network-doks/infrastructure", "agent-network-doks/registry", "agent-network-doks/deploy",
         "agent-network-doks/dns", "agent-network-doks/certificate",
         "agent-network-doks/bootstrap", "agent-network-doks/agent",
         "agent-network-doks/acceptance",
@@ -29,7 +29,7 @@ def test_delete_ordering():
     # In-cluster teardown precedes the infrastructure destroy; local access
     # material goes last.
     assert chain("delete") == [
-        "agent-network-doks/teardown", "agent-network-doks/dns",
+        "agent-network-doks/load-managed", "agent-network-doks/teardown", "agent-network-doks/dns", "agent-network-doks/registry",
         "agent-network-doks/infrastructure", "agent-network-doks/cleanup",
     ]
 
@@ -37,7 +37,7 @@ def test_delete_ordering():
 def test_every_side_effecting_step_is_dry_runnable():
     wired = {*chain("create"), *chain("delete")}
     for step in wired:
-        assert step in side_effecting_steps, step
+        assert step.endswith("/load-managed") or step in side_effecting_steps, step
 
 
 async def test_start_validates(fixture):
@@ -50,7 +50,7 @@ async def test_start_validates(fixture):
     out = await start_step({**opts, "blue/event": "build"}, {})
     assert out["blue/exit"] == 2
     assert ":agent-network-host" in str(out["blue/err"])
-    assert ":doks-version" in str(out["blue/err"])
+    assert "missing managed Kubernetes settings" in str(out["blue/err"])
     # The profile guard refuses the overlay.
     out = await start_step({**fixture, "blue/event": "build"},
                            {"COLORS_PAR_PROFILE": "other"})

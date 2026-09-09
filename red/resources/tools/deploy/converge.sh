@@ -25,6 +25,12 @@ mkdir -p "$STATE"
 
 log() { echo "agent-network-doks-converge: $*" >&2; }
 
+# Finish verification from an earlier teardown before creating replacements.
+if [[ -e $STATE/compute-cleanup.json || -L $STATE/compute-cleanup.json ]]; then
+  bash "$DIR/managed-cleanup.sh" "$STATE/compute-cleanup.json"
+  rm -- "$STATE/compute-cleanup.json"
+fi
+
 # Sanitized diagnostics gathered before a bounded wait gives up, so CCM
 # rejections, LB health-check failures, Cilium denials and CSI attach stalls
 # are diagnosable from the converge log instead of a bare timeout line.

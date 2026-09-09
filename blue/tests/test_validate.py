@@ -87,7 +87,7 @@ def test_zone_derivation(fixture):
 def test_secret_requirements(fixture):
     # Create needs the providers, the backend and the Anthropic key.
     errors = validate.secret_errors({**fixture, "provider-backend": "r2"}, "create")
-    for v in ("COLORS_PAR_DO_TOKEN", "COLORS_PAR_CLOUDFLARE_API_TOKEN",
+    for v in ("COLORS_PAR_CLOUDFLARE_API_TOKEN",
               "COLORS_PAR_ANTHROPIC_API_KEY", "COLORS_PAR_R2_ACCESS_KEY_ID"):
         assert any(v in e for e in errors), v
     # Delete never demands the Anthropic key.

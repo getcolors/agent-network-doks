@@ -68,10 +68,7 @@ metadata:
   name: traefik
   namespace: agent-network-gateway
   labels: {app: traefik}
-  annotations:
-    service.beta.kubernetes.io/do-loadbalancer-name: "<{ compute-name }>"
-    service.beta.kubernetes.io/do-loadbalancer-type: "REGIONAL"
-    service.beta.kubernetes.io/do-loadbalancer-protocol: "tcp"
+  annotations: <{ compute-load-balancer-annotations|safe }>
 spec:
   type: LoadBalancer
   selector: {app: traefik}

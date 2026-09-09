@@ -18,17 +18,20 @@ accept=0
 [[ ${1:-} == --accept ]] && accept=1
 
 status=0
-for backend in local r2; do
-  fixture="$tmp/$backend/colors.yml"
-  mkdir -p "$tmp/$backend"
-  sed "s#WORKDIR#$tmp/$backend/work#" "$root/test/fixtures/colors.yml" > "$fixture"
+for variant in s3 r2 s3-adopt r2-adopt; do
+  backend=${variant%%-*}
+  source="$root/test/fixtures/colors.yml"
+  [[ $variant != *-adopt ]] || source="$root/test/fixtures/colors-adopt.yml"
+  fixture="$tmp/$variant/colors.yml"
+  mkdir -p "$tmp/$variant"
+  sed "s#WORKDIR#$tmp/$variant/work#" "$source" > "$fixture"
   (cd "$root/green" \
    && AGENT_NETWORK_DOKS_LIB_ROOT="$root" COLORS_PAR_PROVIDER_BACKEND="$backend" \
       ./green build -f "$fixture" >/dev/null)
 
   profile=$(sed -n 's/^profile: //p' "$fixture")
-  actual="$tmp/$backend/work/$profile"
-  golden="$root/test/resources/golden/$backend/$profile"
+  actual="$tmp/$variant/work/$profile"
+  golden="$root/test/resources/golden/$variant/$profile"
 
   # No rendered artefact may carry a real secret into a committed golden.
   # Checked before --accept copies anything.

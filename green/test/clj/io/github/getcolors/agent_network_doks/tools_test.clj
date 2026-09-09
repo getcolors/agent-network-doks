@@ -5,6 +5,8 @@
             [clojure.test :refer [deftest is testing]]
             [green.cli :as green-cli]
             [green.scaffold :as sc]
+            [io.github.getcolors.compute-managed :as managed]
+            [io.github.getcolors.compute-runtime :as compute-runtime]
             [io.github.getcolors.agent-network-doks.tools :as tools]))
 
 (defn fixture []
@@ -45,7 +47,7 @@
         slurp-target (fn [suffix]
                        (slurp (first (filter #(str/ends-with? % suffix) written))))]
     (testing "every deploy file renders"
-      (is (= (+ 2 (count tools/deploy-files)) (count written))))
+      (is (= (+ 4 (count tools/deploy-files)) (count written))))
     (testing "the host reaches the scripts and manifests"
       (is (str/includes? (slurp-target "bootstrap.sh") "agent-network-doks.example.com"))
       (is (str/includes? (slurp-target "manifests/proxy.yaml")
@@ -70,9 +72,9 @@
         (is (str/includes? agent "automountServiceAccountToken: false"))))
     (testing "the LB is pinned to the regional TCP type with enforced sources"
       (let [svc (slurp-target "manifests/traefik.yaml")]
-        (is (str/includes? svc "do-loadbalancer-protocol: \"tcp\""))
-        (is (str/includes? svc "do-loadbalancer-type: \"REGIONAL\""))
-        (is (str/includes? svc "do-loadbalancer-name: \"agent-network-doks-fixture\""))
+        (is (str/includes? svc "do-loadbalancer-protocol\":\"tcp\""))
+        (is (str/includes? svc "do-loadbalancer-type\":\"REGIONAL\""))
+        (is (str/includes? svc "do-loadbalancer-name\":\"agent-network-doks-fixture\""))
         (is (str/includes? svc "loadBalancerSourceRanges: [0.0.0.0/0]"))))
     (testing "CIDR-derived values stay placeholders for the read-back subnet"
       (is (str/includes? (slurp-target "netbird-config.yaml") "__POD_CIDR__"))
@@ -102,14 +104,15 @@
 (deftest infrastructure-templates
   (let [res (fn [name]
               (slurp (io/resource
-                      (str "io/github/getcolors/agent-network-doks/tools/infrastructure/" name))))]
+                      (str "io/github/getcolors/agent-network-doks/tools/registry/" name))))]
     (testing "the kubeconfig contract is DO-shaped, HA explicit, subnets never inputs"
-      (let [tf (res "main.tf")]
-        (is (str/includes? tf "kube_config[0].raw_config"))
-        (is (str/includes? tf "ha = false"))
-        (is (not (str/includes? tf "cluster_subnet =")))
-        (is (not (str/includes? tf "service_subnet =")))
-        (is (str/includes? tf "output \"cluster-subnet\""))))
+      (let [document (json/parse-string (json/generate-string (get-in (managed/plan-managed-kubernetes (fixture)) [:documents "managed-kubernetes.tf.json"])) true)
+            cluster (get-in document [:resource :digitalocean_kubernetes_cluster :cluster])]
+        (is (false? (:ha cluster)))
+        (is (not (contains? cluster :cluster_subnet)))
+        (is (not (contains? cluster :service_subnet)))
+        (is (true? (get-in document [:output :kubeconfig_b64 :sensitive])))
+        (is (str/includes? (get-in document [:output :kubeconfig_b64 :value]) "kube_config[0].raw_config"))))
     (testing "both registry modes: credentials hang off the registry reference and rotate"
       (doseq [f ["registry-create.tf" "registry-adopt.tf"]]
         (let [tf (res f)]
@@ -119,3 +122,18 @@
       (is (str/includes? (res "registry-adopt.tf") "data \"digitalocean_container_registry\""))
       (is (str/includes? (res "registry-create.tf") "resource \"digitalocean_container_registry\""))
       (is (not (str/includes? (res "registry-adopt.tf") "resource \"digitalocean_container_registry\" "))))))
+
+
+(deftest registry-delete-reloads-recorded-ownership
+  (let [dir (str (java.nio.file.Files/createTempDirectory "doks-registry-read-" (make-array java.nio.file.attribute.FileAttribute 0)))
+        opts (assoc (fixture) :workdir dir)
+        params {:kind "application-registry" :provider "digitalocean" :profile (:profile opts) :repository (:profile opts) :name "recorded-registry" :adopted true}]
+    (with-redefs [tools/read-registry-state (fn [_ key]
+                                              (is (= (str (:profile opts) "/agent-network-doks-registry.tfstate") key))
+                                              {:status "present" :params params})]
+      (is (not (pos? (get (tools/load-registry-facts opts) :green/exit 0))))
+      (is (str/includes? (slurp (tools/registry-env-path opts)) "REGISTRY_NAME='recorded-registry'")))
+    (let [bad (assoc opts :workdir (str (io/file dir "bad")))]
+      (with-redefs [tools/read-registry-state (fn [& _] {:status "present" :params (assoc params :profile "other")})]
+        (is (= 1 (:green/exit (tools/load-registry-facts bad))))
+        (is (not (.exists (io/file (tools/registry-env-path bad)))))))))

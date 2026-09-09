@@ -2,9 +2,11 @@
 port of io.github.getcolors.agent-network-doks.tools."""
 
 from __future__ import annotations
+from colors_compute.managed import managed_application_artifacts, managed_application_settings
 
 import base64
 import json
+import re
 import math
 import os
 import shutil
@@ -21,8 +23,9 @@ from blue.scaffold import PRESERVE_JINJA_DELIMITERS, content_spec, scaffold
 from blue.workflow import StepError, failed
 
 from . import validate
+from . import compute
 
-infrastructure_tool = "agent-network-doks-infrastructure"
+infrastructure_tool = "agent-network-doks-registry"
 dns_tool = "agent-network-doks-dns"
 deploy_tool = "agent-network-doks-deploy"
 
@@ -262,10 +265,6 @@ def persist_cluster_access(opts: dict, result: dict) -> None:
     files under the profile directory, never in a rendered template, never in
     a golden. The subnets are outputs, not desired state — everything
     CIDR-derived downstream renders from these files."""
-    kc = str(output_value(result, "kubeconfig-b64") or "")
-    if kc:
-        write_private(kubeconfig_path(opts),
-                      base64.b64decode(kc).decode("utf-8"))
     host = str(output_value(result, "registry-host") or "")
     name = str(output_value(result, "registry-name") or "")
     repo = validate.registry_repository(opts)
@@ -281,29 +280,23 @@ def persist_cluster_access(opts: dict, result: dict) -> None:
         v = str(output_value(result, k) or "")
         if v:
             write_private(path, v)
-    for k, file in (("cluster-subnet", "cluster-subnet"),
-                    ("service-subnet", "service-subnet")):
-        v = str(output_value(result, k) or "")
-        if v:
-            write_private(str(Path(state_dir(opts)) / file), v)
 
 
-async def infrastructure_step(opts: dict) -> dict:
+async def registry_step(opts: dict) -> dict:
     dir = tool_dir(opts, infrastructure_tool)
     data = infrastructure_data(opts)
     registry_template = ("registry-adopt.tf" if validate.adopt_registry(opts)
                          else "registry-create.tf")
-    specs = [spec(template("infrastructure", "main.tf"), f"{dir}/main.tf", data),
-             spec(template("infrastructure", registry_template),
+    specs = [spec(template("registry", "main.tf"), f"{dir}/main.tf", data),
+             spec(template("registry", registry_template),
                   f"{dir}/registry.tf", data)]
     preflight_err = None
     if opts.get("blue/event") == "create" and not opts.get("blue/dry-run"):
-        preflight_err = (await doks_version_error(opts)
-                         or await registry_preflight_error(opts))
+        preflight_err = await registry_preflight_error(opts)
     if preflight_err:
         return {**opts, "blue/exit": 1, "blue/err": preflight_err}
     result = await tofu.tofu_with_spec(opts, specs, dir=dir,
-                                       env=credential_env(opts, "provider-compute"))
+                                       env=credential_env(opts, "provider-registry"))
     if failed(result):
         return result
     if opts.get("blue/event") == "build":
@@ -455,7 +448,10 @@ def deploy_data(opts: dict) -> dict:
     operator secret: the Anthropic key, the Cloudflare token and the registry
     credentials reach the scripts through the process environment or private
     state files, so nothing in .colors/ or a golden ever holds one."""
+    settings = managed_application_settings(opts, opts.get('colors-compute/managed'))
     return {**opts,
+            "compute-load-balancer-annotations": json.dumps(settings['load_balancer_annotations'], sort_keys=True, separators=(',', ':')),
+            "compute-pod-cidr": settings.get('pod_cidr'),
             "allowed-model": validate.allowed_model(opts),
             "denied-claimed-model": validate.denied_claimed_model(opts),
             # The LB the cloud controller creates is named after the resolved
@@ -466,8 +462,8 @@ def deploy_data(opts: dict) -> dict:
             # for Service.spec.loadBalancerSourceRanges, and a space-joined
             # form acceptance's LB firewall check rebuilds a JSON array from.
             # Unquoted deliberately — the template engine HTML-escapes quotes.
-            "http-sources-yaml": "[" + ", ".join(cidrs(opts, "digitalocean-http-sources")) + "]",
-            "http-sources-list": " ".join(cidrs(opts, "digitalocean-http-sources")),
+            "http-sources-yaml": "[" + ", ".join(settings['http_sources']) + "]",
+            "http-sources-list": " ".join(settings['http_sources']),
             # The escaped base domain for Traefik's HostSNIRegexp: only
             # endpoint subdomains ride the TCP passthrough, never the bare
             # base name (TCP routers outrank HTTP routers in Traefik).
@@ -510,6 +506,7 @@ def deploy_specs(opts: dict) -> list[dict]:
     data = deploy_data(opts)
     return ([spec(template(tdir, Path(subpath).name), f"{dir}/{subpath}", data)
              for subpath, tdir in deploy_files]
+            + [raw_spec(f"{dir}/{name}", content) for name, content in managed_application_artifacts(opts, ['managed-cleanup.sh', 'managed-ingress.sh']).items()]
             + [raw_spec(f"{dir}/desired.json", desired_json(data)),
                raw_spec(f"{dir}/inventory.json", inventory(data))])
 
@@ -630,12 +627,9 @@ async def teardown_step(opts: dict) -> dict:
     rendered = {**scaffold({**opts, "blue/event": "create"}, deploy_specs(opts)),
                 "blue/event": "delete"}
     if not Path(kubeconfig_path(opts)).exists():
-        return {**rendered, "blue/exit": 0}
+        return {**rendered, "blue/exit": 1, "blue/err": "managed cluster access unavailable"}
     result = run_script(rendered, "teardown.sh")
-    # A cluster that stopped answering must not block the destroy that
-    # removes it: teardown is best-effort, the tofu destroy is the
-    # authority.
-    return {**result, "blue/exit": 0}
+    return result
 
 
 async def cleanup_step(opts: dict) -> dict:
@@ -702,3 +696,32 @@ def kubectl_main(state_file: str, args: list[str]) -> int:
         return 2
     result = run_inherit(["env", f"KUBECONFIG={kc}", "kubectl", *args])
     return result.exit
+
+
+infrastructure_step = compute.infrastructure_step
+load_managed_step = compute.load_step
+
+
+async def load_registry_facts(opts, reader=None):
+    from colors_compute.backend import read_state
+    key = opts['profile'] + '/agent-network-doks-registry.tfstate'
+    if reader is None:
+        from colors_compute.execution import state_presence
+        presence = await state_presence(opts, key, legacy=True)
+        result = await read_state(opts, key) if presence.get('status') == 'present' else presence
+    else:
+        result = await reader(opts, key)
+    params = result.get('params', {})
+    if result.get('status') == 'absent':
+        params = {'adopted': False, 'name': '', 'repository': opts['profile']}
+    elif (result.get('status') != 'present' or params.get('kind') != 'application-registry'
+          or params.get('provider') != 'digitalocean' or params.get('profile') != opts['profile']
+          or params.get('repository') != opts['profile'] or type(params.get('adopted')) is not bool
+          or not isinstance(params.get('name'), str) or not re.fullmatch(r'[a-z0-9][a-z0-9-]{1,61}[a-z0-9]', params['name'])):
+        return {**opts, 'blue/exit': 1, 'blue/err': 'recorded registry ownership unavailable'}
+    write_private(registry_env_path(opts),
+                  'REGISTRY_HOST=registry.digitalocean.com\n'
+                  + 'REGISTRY_NAME=' + sh_quote(params['name']) + '\n'
+                  + 'REGISTRY_REPO=' + sh_quote(params['repository']) + '\n'
+                  + 'REGISTRY_ADOPTED=' + str(params['adopted']).lower() + '\n')
+    return opts

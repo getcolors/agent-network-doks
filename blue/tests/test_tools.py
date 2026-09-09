@@ -51,7 +51,7 @@ def test_deploy_rendering(fixture):
         return Path(next(p for p in written if p.endswith(suffix))).read_text()
 
     # Every deploy file renders.
-    assert len(written) == len(tools.deploy_files) + 2
+    assert len(written) == len(tools.deploy_files) + 4
     # The host reaches the scripts and manifests.
     assert "agent-network-doks.example.com" in slurp_target("bootstrap.sh")
     assert "NB_PROXY_DOMAIN" in slurp_target("manifests/proxy.yaml")
@@ -72,9 +72,9 @@ def test_deploy_rendering(fixture):
     assert "automountServiceAccountToken: false" in slurp_target("manifests/agent-primary.yaml")
     # The LB is pinned to the regional TCP type with enforced sources.
     svc = slurp_target("manifests/traefik.yaml")
-    assert 'do-loadbalancer-protocol: "tcp"' in svc
-    assert 'do-loadbalancer-type: "REGIONAL"' in svc
-    assert 'do-loadbalancer-name: "agent-network-doks-fixture"' in svc
+    assert 'do-loadbalancer-protocol":"tcp"' in svc
+    assert 'do-loadbalancer-type":"REGIONAL"' in svc
+    assert 'do-loadbalancer-name":"agent-network-doks-fixture"' in svc
     assert "loadBalancerSourceRanges: [0.0.0.0/0]" in svc
     # CIDR-derived values stay placeholders for the read-back subnet.
     assert "__POD_CIDR__" in slurp_target("netbird-config.yaml")
@@ -103,15 +103,9 @@ def test_cidr_splitting():
 
 def test_infrastructure_templates():
     def res(name):
-        return (RESOURCES / "tools" / "infrastructure" / name).read_text()
+        return (RESOURCES / "tools" / "registry" / name).read_text()
 
-    # The kubeconfig contract is DO-shaped, HA explicit, subnets never inputs.
-    tf = res("main.tf")
-    assert "kube_config[0].raw_config" in tf
-    assert "ha = false" in tf
-    assert "cluster_subnet =" not in tf
-    assert "service_subnet =" not in tf
-    assert 'output "cluster-subnet"' in tf
+    assert 'digitalocean_kubernetes_cluster' not in res("main.tf")
     # Both registry modes: credentials hang off the registry reference and
     # rotate.
     for f in ("registry-create.tf", "registry-adopt.tf"):
@@ -122,3 +116,32 @@ def test_infrastructure_templates():
     assert 'data "digitalocean_container_registry"' in res("registry-adopt.tf")
     assert 'resource "digitalocean_container_registry"' in res("registry-create.tf")
     assert 'resource "digitalocean_container_registry" ' not in res("registry-adopt.tf")
+
+async def test_registry_delete_reloads_owned_facts(fixture, tmp_path):
+    opts = {**fixture, 'workdir': str(tmp_path)}
+    facts = {'kind': 'application-registry', 'provider': 'digitalocean',
+             'profile': opts['profile'], 'repository': opts['profile'],
+             'name': 'recorded-registry', 'adopted': True}
+    async def reader(received, key):
+        assert key == opts['profile'] + '/agent-network-doks-registry.tfstate'
+        return {'status': 'present', 'params': facts}
+    result = await tools.load_registry_facts(opts, reader)
+    assert not result.get('blue/exit')
+    content = Path(tools.registry_env_path(opts)).read_text()
+    assert "REGISTRY_NAME='recorded-registry'" in content
+    assert 'REGISTRY_ADOPTED=true' in content
+    assert Path(tools.registry_env_path(opts)).stat().st_mode & 0o777 == 0o600
+
+async def test_registry_delete_refuses_unverified_ownership(fixture, tmp_path):
+    for index, result in enumerate([
+        {'status': 'error'},
+        {'status': 'present', 'params': {}},
+        {'status': 'present', 'params': {'kind': 'application-registry', 'provider': 'digitalocean',
+         'profile': 'another-profile', 'repository': fixture['profile'], 'name': 'recorded-registry', 'adopted': True}},
+    ]):
+        opts = {**fixture, 'workdir': str(tmp_path / str(index))}
+        async def reader(*_):
+            return result
+        outcome = await tools.load_registry_facts(opts, reader)
+        assert outcome['blue/exit'] == 1
+        assert not Path(tools.registry_env_path(opts)).exists()

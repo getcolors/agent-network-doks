@@ -6,7 +6,7 @@ from __future__ import annotations
 from blue import dry_run, progress, tofu
 from blue.cli import par_name, read_pars
 from blue.lifecycle import preflight
-from blue.workflow import advice_add, workflow
+from blue.workflow import advice_add, workflow, failed
 
 from . import tools, validate
 
@@ -14,7 +14,7 @@ LIFECYCLE_EVENTS = ("create", "delete")
 
 DEFAULTS = {"provider-compute": "digitalocean",
             "provider-dns": "cloudflare",
-            "provider-backend": "local",
+            "provider-backend": "r2",
             "compute-prevent-destroy": True,
             "workdir": ".colors"}
 
@@ -43,9 +43,11 @@ def wire_fn(step: str, run_opts: dict):
         # kubeconfig is needed by the teardown and dead only after the
         # destroy.
         return {
-            "agent-network-doks/start": (start_step, "agent-network-doks/teardown"),
+            "agent-network-doks/start": (start_step, "agent-network-doks/load-managed"),
+            "agent-network-doks/load-managed": (tools.load_managed_step, "agent-network-doks/teardown"),
             "agent-network-doks/teardown": (tools.teardown_step, "agent-network-doks/dns"),
-            "agent-network-doks/dns": (tools.dns_step, "agent-network-doks/infrastructure"),
+            "agent-network-doks/dns": (tools.dns_step, "agent-network-doks/registry"),
+            "agent-network-doks/registry": (tools.registry_step, "agent-network-doks/infrastructure"),
             "agent-network-doks/infrastructure": (tools.infrastructure_step, "agent-network-doks/cleanup"),
             "agent-network-doks/cleanup": (tools.cleanup_step,),
         }.get(step)
@@ -56,7 +58,8 @@ def wire_fn(step: str, run_opts: dict):
     # the two-pod application, and the gates.
     return {
         "agent-network-doks/start": (start_step, "agent-network-doks/infrastructure"),
-        "agent-network-doks/infrastructure": (tools.infrastructure_step, "agent-network-doks/deploy"),
+        "agent-network-doks/infrastructure": (tools.infrastructure_step, "agent-network-doks/registry"),
+        "agent-network-doks/registry": (tools.registry_step, "agent-network-doks/deploy"),
         "agent-network-doks/deploy": (tools.deploy_step, "agent-network-doks/dns"),
         "agent-network-doks/dns": (tools.dns_step, "agent-network-doks/certificate"),
         "agent-network-doks/certificate": (tools.certificate_step, "agent-network-doks/bootstrap"),
@@ -73,7 +76,7 @@ def backend_advice(tool: str):
 
 
 side_effecting_steps = [
-    "agent-network-doks/infrastructure", "agent-network-doks/deploy",
+    "agent-network-doks/infrastructure", "agent-network-doks/registry", "agent-network-doks/deploy",
     "agent-network-doks/dns", "agent-network-doks/certificate",
     "agent-network-doks/bootstrap", "agent-network-doks/agent",
     "agent-network-doks/acceptance", "agent-network-doks/teardown",
@@ -82,8 +85,8 @@ side_effecting_steps = [
 
 
 def create_workflow():
-    wf = workflow(start="agent-network-doks/start", wire_fn=wire_fn)
-    wf = advice_add(wf, "agent-network-doks/infrastructure", "before",
+    wf = workflow(start="agent-network-doks/start", wire_fn=wire_fn, next_fn=lambda _step, successors, opts: [] if opts.get("managed/already-destroyed") or failed(opts) else [(step, opts) for step in (successors or [])])
+    wf = advice_add(wf, "agent-network-doks/registry", "before",
                     "io.github.getcolors.agent-network-doks.workflow/backend",
                     backend_advice(tools.infrastructure_tool))
     wf = advice_add(wf, "agent-network-doks/dns", "before",

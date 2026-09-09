@@ -13,28 +13,23 @@ from __future__ import annotations
 import re
 
 from blue.cli import par_name
+from colors_compute.contract import registry
+from colors_compute.managed import managed_application_settings, managed_application_artifacts, managed_errors, managed_name
 
 from . import utils
 
 profile_par = par_name("profile")
 
 providers = {
-    "provider-compute": {
+    "provider-registry": {
         "digitalocean": {"secrets": ["do-token"],
                          "tofu_env": {"do-token": "DIGITALOCEAN_TOKEN"}},
     },
     "provider-dns": {
         "cloudflare": {"secrets": ["cloudflare-api-token"], "tofu_env": {}},
     },
-    "provider-backend": {
-        "local": {"secrets": [], "tofu_env": {}},
-        "s3": {"secrets": ["s3-access-key-id", "s3-secret-access-key"],
-               "tofu_env": {"s3-access-key-id": "AWS_ACCESS_KEY_ID",
-                            "s3-secret-access-key": "AWS_SECRET_ACCESS_KEY"}},
-        "r2": {"secrets": ["r2-access-key-id", "r2-secret-access-key"],
-               "tofu_env": {"r2-access-key-id": "AWS_ACCESS_KEY_ID",
-                            "r2-secret-access-key": "AWS_SECRET_ACCESS_KEY"}},
-    },
+    "provider-backend": {name: {"secrets": entry["secrets"], "tofu_env": entry["tofu-env"]}
+                         for name, entry in registry()["backend"].items()},
 }
 
 # Every key desired state must carry unconditionally. There is no
@@ -45,7 +40,7 @@ providers = {
 # cluster, never inputs. `digitalocean-registry-tier` is conditionally
 # required — create mode only — and validated separately.
 required = [
-    "profile", "workdir", "provider-compute", "provider-dns", "provider-backend",
+    "digitalocean-region", "profile", "workdir", "provider-compute", "provider-dns", "provider-backend",
     "compute-prevent-destroy",
     "agent-network-host", "agent-network-letsencrypt-email",
     "agent-network-admin-email", "agent-network-admin-name",
@@ -60,8 +55,8 @@ required = [
     "agent-network-claude-code-version", "agent-network-privoxy-version",
     "agent-network-gost-version", "agent-network-gost-sha256",
     "agent-network-lego-version",
-    "digitalocean-region", "doks-version", "digitalocean-node-size",
-    "digitalocean-node-count", "digitalocean-http-sources",
+
+
 ]
 
 image_keys = [
@@ -104,14 +99,10 @@ def placeholder(v) -> bool:
 
 
 def compute_name(opts: dict) -> str:
-    """What this deployment calls its cluster. Every label — the node pool's,
-    the load balancer's, a created registry's (lowercased, reduced to what
-    DOCR accepts) — derives from this and never from the raw override key or
-    a second copy of the profile (§3)."""
-    override = opts.get("digitalocean-name")
-    if placeholder(override):
-        return str(opts.get("profile"))
-    return str(override).strip()
+    try:
+        return managed_name(opts)
+    except ValueError:
+        return str(opts.get('profile') or '')
 
 
 def adopt_registry(opts: dict) -> bool:
@@ -242,17 +233,30 @@ def _entry(opts: dict, slot: str) -> dict | None:
     return providers.get(slot, {}).get(str(opts.get(slot)))
 
 
+def managed_application_errors(opts):
+    if managed_errors(opts):
+        return []
+    try:
+        settings = managed_application_settings(opts)
+        if not settings.get('pod_cidr'):
+            return [':compute-pod-cidr is required']
+        managed_application_artifacts(opts, ['managed-cleanup.sh', 'managed-ingress.sh'])
+        return []
+    except ValueError as error:
+        return [str(error)]
+
+
 def state_errors(opts: dict) -> list[str]:
     errors: list[str] = []
     for k in required:
         if missing(opts.get(k)):
             errors.append(f":{k} is required")
-    if opts.get("provider-compute") != "digitalocean":
-        errors.append(":provider-compute must be digitalocean")
+    errors.extend(managed_errors(opts))
+    errors.extend(managed_application_errors(opts))
     if opts.get("provider-dns") != "cloudflare":
         errors.append(":provider-dns must be cloudflare")
-    if opts.get("provider-backend") not in ("local", "s3", "r2"):
-        errors.append(":provider-backend must be local, s3, or r2")
+    if opts.get("provider-backend") not in registry()["backend"]:
+        errors.append(":provider-backend must be s3 or r2")
     if not isinstance(opts.get("compute-prevent-destroy"), bool):
         errors.append(":compute-prevent-destroy must be true or false")
     if (not missing(opts.get("agent-network-host"))
@@ -286,14 +290,6 @@ def state_errors(opts: dict) -> list[str]:
     if not (missing(opts.get("agent-network-gost-sha256"))
             or _sha256_re.fullmatch(str(opts.get("agent-network-gost-sha256")))):
         errors.append(":agent-network-gost-sha256 must be the 64-hex sha256 of the release tarball")
-    if not (missing(opts.get("doks-version"))
-            or _doks_version_re.fullmatch(str(opts.get("doks-version")))):
-        errors.append(":doks-version must be a DOKS slug like 1.36.3-do.2")
-    node_count = opts.get("digitalocean-node-count")
-    if not (missing(node_count)
-            or (isinstance(node_count, int) and not isinstance(node_count, bool)
-                and 1 <= node_count <= 16)):
-        errors.append(":digitalocean-node-count must be an integer between 1 and 16")
     if not (missing(opts.get("agent-network-log-level"))
             or str(opts.get("agent-network-log-level")) in ("error", "warn", "info", "debug")):
         errors.append(":agent-network-log-level must be error, warn, info, or debug")
@@ -327,16 +323,8 @@ def state_errors(opts: dict) -> list[str]:
                                     opts.get("agent-network-allowed-models"))):
         errors.extend(model_errors(opts))
     errors.extend(registry_errors(opts))
-    srcs = opts.get("digitalocean-http-sources")
-    if (not missing(srcs)
-            and (not isinstance(srcs, (list, tuple)) or not srcs
-                 or any(not ipv4_cidr(s) for s in srcs))):
-        errors.append(":digitalocean-http-sources must be a non-empty list of IPv4 CIDRs")
     # The override is validated against the provider's rules rather than
     # passed through unread (Compute Name Standard §2).
-    if not (placeholder(opts.get("digitalocean-name"))
-            or _do_name_re.fullmatch(str(opts.get("digitalocean-name")).strip())):
-        errors.append(":digitalocean-name must be letters, digits, dot or dash")
     return errors
 
 
@@ -346,7 +334,7 @@ def backend_secrets(opts: dict) -> list[str]:
 
 
 # What talking to the providers needs, on any real event.
-provider_secrets = ["do-token", "cloudflare-api-token"]
+provider_secrets = ["cloudflare-api-token"]
 
 # What converging the cluster needs, and therefore only a create.
 #
@@ -377,7 +365,7 @@ def secret_errors(opts: dict, event: str) -> list[str]:
 
 
 def tofu_env(opts: dict, slot: str) -> dict[str, str]:
-    if slot == "provider-compute":
+    if slot == "provider-registry":
         return {"do-token": "DIGITALOCEAN_TOKEN"}
     if slot == "provider-dns":
         return {"cloudflare-api-token": "CLOUDFLARE_API_TOKEN"}

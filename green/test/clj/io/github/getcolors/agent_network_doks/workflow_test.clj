@@ -16,7 +16,7 @@
 
 (deftest create-ordering
   (testing "cluster → workloads → dns → certificate → bootstrap → agent → gates"
-    (is (= [:agent-network-doks/infrastructure :agent-network-doks/deploy
+    (is (= [:agent-network-doks/infrastructure :agent-network-doks/registry :agent-network-doks/deploy
             :agent-network-doks/dns :agent-network-doks/certificate
             :agent-network-doks/bootstrap :agent-network-doks/agent
             :agent-network-doks/acceptance]
@@ -25,7 +25,7 @@
 (deftest delete-ordering
   (testing "in-cluster teardown precedes the infrastructure destroy; local
             access material goes last"
-    (is (= [:agent-network-doks/teardown :agent-network-doks/dns
+    (is (= [:agent-network-doks/load-infrastructure :agent-network-doks/teardown :agent-network-doks/dns :agent-network-doks/registry
             :agent-network-doks/infrastructure :agent-network-doks/cleanup]
            (chain :delete)))))
 
@@ -45,7 +45,7 @@
                                    {})]
       (is (= 2 (:green/exit out)))
       (is (str/includes? (str (:green/err out)) ":agent-network-host"))
-      (is (str/includes? (str (:green/err out)) ":doks-version"))))
+      (is (str/includes? (str (:green/err out)) "missing managed Kubernetes settings"))))
   (testing "the profile guard refuses the overlay"
     (let [out (workflow/start-step (assoc (fixture) :green/event :build)
                                    {"COLORS_PAR_PROFILE" "other"})]

@@ -39,6 +39,13 @@ probe that must draw the bare pre-identity 403, the LB firewall verified
 through the DigitalOcean API, and a bounded disruption suite (pod deletes,
 component restarts, a node drain) after which the whole claim is re-probed.
 
+Compute is supplied by the pinned [colors-compute library](https://github.com/getcolors/colors-compute).
+It owns provider selection, managed state, conditional ownership, kubeconfig,
+and provider cleanup checks. Application registry and DNS stages remain here.
+R2 and S3 are the supported state backends; S3 uses ambient AWS credentials.
+Combined legacy infrastructure state requires a reviewed split before using
+this lifecycle. Build and schema checks do not prove a live migration.
+
 ## Use
 
 ```sh
@@ -68,7 +75,7 @@ proving everything NetBird owns with nothing billable.
 
 ```sh
 cd green && bb test           # validation, tools, workflow
-cd green && bb golden         # two backends (local, r2), byte for byte
+cd green && bb golden         # two backends (s3, r2), byte for byte
 cd green && bb golden:accept  # after an intended change — read the diff first
 cd red && bun test && bun run typecheck
 cd blue && uv sync && uv run pytest

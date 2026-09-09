@@ -9,7 +9,7 @@
             [io.github.getcolors.agent-network-doks.validate :as validate]))
 
 (def defaults {:provider-compute "digitalocean" :provider-dns "cloudflare"
-               :provider-backend "local" :compute-prevent-destroy true
+               :provider-backend "r2" :compute-prevent-destroy true
                :workdir ".colors"})
 
 (defn start-step
@@ -37,9 +37,11 @@
     ;; them in the account. Local access material goes last — the kubeconfig
     ;; is needed by the teardown and dead only after the destroy.
     (case step
-      :agent-network-doks/start [start-step :agent-network-doks/teardown]
+      :agent-network-doks/start [start-step :agent-network-doks/load-infrastructure]
+      :agent-network-doks/load-infrastructure [tools/load-infrastructure-step :agent-network-doks/teardown]
       :agent-network-doks/teardown [tools/teardown-step :agent-network-doks/dns]
-      :agent-network-doks/dns [tools/dns-step :agent-network-doks/infrastructure]
+      :agent-network-doks/dns [tools/dns-step :agent-network-doks/registry]
+      :agent-network-doks/registry [tools/registry-step :agent-network-doks/infrastructure]
       :agent-network-doks/infrastructure [tools/infrastructure-step :agent-network-doks/cleanup]
       :agent-network-doks/cleanup [tools/cleanup-step])
     ;; Create: the cluster first; then the workloads (the edge and the proxy
@@ -49,7 +51,8 @@
     ;; the two-pod application, and the gates.
     (case step
       :agent-network-doks/start [start-step :agent-network-doks/infrastructure]
-      :agent-network-doks/infrastructure [tools/infrastructure-step :agent-network-doks/deploy]
+      :agent-network-doks/infrastructure [tools/infrastructure-step :agent-network-doks/registry]
+      :agent-network-doks/registry [tools/registry-step :agent-network-doks/deploy]
       :agent-network-doks/deploy [tools/deploy-step :agent-network-doks/dns]
       :agent-network-doks/dns [tools/dns-step :agent-network-doks/certificate]
       :agent-network-doks/certificate [tools/certificate-step :agent-network-doks/bootstrap]
@@ -63,16 +66,17 @@
     :key-fn #(str (:profile %) "/" tool ".tfstate")}))
 
 (def side-effecting
-  [:agent-network-doks/infrastructure :agent-network-doks/deploy
+  [:agent-network-doks/infrastructure :agent-network-doks/load-infrastructure :agent-network-doks/registry :agent-network-doks/deploy
    :agent-network-doks/dns :agent-network-doks/certificate
    :agent-network-doks/bootstrap :agent-network-doks/agent
    :agent-network-doks/acceptance :agent-network-doks/teardown
    :agent-network-doks/cleanup])
 
 (def workflow
-  (-> (wf/workflow {:start :agent-network-doks/start :wire-fn wire-fn})
-      (wf/advice-add :agent-network-doks/infrastructure :before ::backend
-                     (backend-advice tools/infrastructure-tool))
+  (-> (wf/workflow {:start :agent-network-doks/start :wire-fn wire-fn
+                     :next-fn (fn [_ next opts] (when-not (or (wf/failed? opts) (:agent-network-doks/already-destroyed opts)) (map #(vector % opts) next)))})
+      (wf/advice-add :agent-network-doks/registry :before ::backend
+                     (backend-advice tools/registry-tool))
       (wf/advice-add :agent-network-doks/dns :before ::backend (backend-advice tools/dns-tool))
       progress/advise
       (dry-run/advise side-effecting)))

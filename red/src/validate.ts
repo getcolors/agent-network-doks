@@ -1,3 +1,4 @@
+import {managed_application_artifacts,managed_application_settings,managed_errors,plan_managed_kubernetes,registry} from "colors-compute-red";
 // Credential-free desired-state validation for the DOKS Agent Network demo,
 // the port of io.github.getcolors.agent-network-doks.validate. Depends only on
 // the SDK: like `k8s`, this package carries its own provider registry rather
@@ -19,22 +20,14 @@ interface ProviderEntry {
 }
 
 export const providers: Record<string, Record<string, ProviderEntry>> = {
-  "provider-compute": {
+  "provider-registry": {
     digitalocean: { secrets: ["do-token"],
                     tofuEnv: { "do-token": "DIGITALOCEAN_TOKEN" } },
   },
   "provider-dns": {
     cloudflare: { secrets: ["cloudflare-api-token"], tofuEnv: {} },
   },
-  "provider-backend": {
-    local: { secrets: [], tofuEnv: {} },
-    s3: { secrets: ["s3-access-key-id", "s3-secret-access-key"],
-          tofuEnv: { "s3-access-key-id": "AWS_ACCESS_KEY_ID",
-                     "s3-secret-access-key": "AWS_SECRET_ACCESS_KEY" } },
-    r2: { secrets: ["r2-access-key-id", "r2-secret-access-key"],
-          tofuEnv: { "r2-access-key-id": "AWS_ACCESS_KEY_ID",
-                     "r2-secret-access-key": "AWS_SECRET_ACCESS_KEY" } },
-  },
+  "provider-backend": Object.fromEntries(Object.entries(registry.backend).map(([name,entry])=>[name,{secrets:[...entry.secrets],tofuEnv:{...entry["tofu-env"]}}])),
 };
 
 // Every key desired state must carry unconditionally. There is no
@@ -45,7 +38,7 @@ export const providers: Record<string, Record<string, ProviderEntry>> = {
 // cluster, never inputs. `digitalocean-registry-tier` is conditionally
 // required — create mode only — and validated separately.
 export const required = [
-  "profile", "workdir", "provider-compute", "provider-dns", "provider-backend",
+  "digitalocean-region", "profile", "workdir", "provider-compute", "provider-dns", "provider-backend",
   "compute-prevent-destroy",
   "agent-network-host", "agent-network-letsencrypt-email",
   "agent-network-admin-email", "agent-network-admin-name",
@@ -60,8 +53,8 @@ export const required = [
   "agent-network-claude-code-version", "agent-network-privoxy-version",
   "agent-network-gost-version", "agent-network-gost-sha256",
   "agent-network-lego-version",
-  "digitalocean-region", "doks-version", "digitalocean-node-size",
-  "digitalocean-node-count", "digitalocean-http-sources",
+
+
 ];
 
 export const imageKeys = [
@@ -119,8 +112,8 @@ export function placeholder(v: unknown): boolean {
 // accepts) — derives from this and never from the raw override key or a
 // second copy of the profile (§3).
 export function computeName(opts: Opts): string {
-  const override = opts["digitalocean-name"];
-  return placeholder(override) ? String(opts.profile) : String(override).trim();
+  try { return String(plan_managed_kubernetes(opts).params.name); }
+  catch { return String(opts.profile); }
 }
 
 // Registry mode is keyed on `digitalocean-registry-name` alone: present
@@ -261,19 +254,23 @@ function entry(opts: Opts, slot: string): ProviderEntry | undefined {
   return providers[slot]?.[String(opts[slot])];
 }
 
+function managedApplicationErrors(opts:Opts):string[] {
+ if(managed_errors(opts).length)return [];
+ try {const settings=managed_application_settings(opts);if(!settings.pod_cidr)return [':compute-pod-cidr is required'];managed_application_artifacts(opts,["managed-cleanup.sh", "managed-ingress.sh"]);return [];}
+ catch(error){return [error instanceof Error?error.message:'invalid managed application settings'];}
+}
+
 export function stateErrors(opts: Opts): string[] {
   const errors: string[] = [];
   for (const k of required) {
     if (missing(opts[k])) errors.push(`:${k} is required`);
   }
-  if (opts["provider-compute"] !== "digitalocean") {
-    errors.push(":provider-compute must be digitalocean");
-  }
+  errors.push(...managed_errors(opts),...managedApplicationErrors(opts));
   if (opts["provider-dns"] !== "cloudflare") {
     errors.push(":provider-dns must be cloudflare");
   }
-  if (!["local", "s3", "r2"].includes(String(opts["provider-backend"]))) {
-    errors.push(":provider-backend must be local, s3, or r2");
+  if (!Object.hasOwn(registry.backend, String(opts["provider-backend"]))) {
+    errors.push(":provider-backend must be s3 or r2");
   }
   if (typeof opts["compute-prevent-destroy"] !== "boolean") {
     errors.push(":compute-prevent-destroy must be true or false");
@@ -321,16 +318,6 @@ export function stateErrors(opts: Opts): string[] {
         sha256Re.test(String(opts["agent-network-gost-sha256"])))) {
     errors.push(":agent-network-gost-sha256 must be the 64-hex sha256 of the release tarball");
   }
-  if (!(missing(opts["doks-version"]) ||
-        doksVersionRe.test(String(opts["doks-version"])))) {
-    errors.push(":doks-version must be a DOKS slug like 1.36.3-do.2");
-  }
-  if (!(missing(opts["digitalocean-node-count"]) ||
-        (Number.isInteger(opts["digitalocean-node-count"]) &&
-         (opts["digitalocean-node-count"] as number) >= 1 &&
-         (opts["digitalocean-node-count"] as number) <= 16))) {
-    errors.push(":digitalocean-node-count must be an integer between 1 and 16");
-  }
   if (!(missing(opts["agent-network-log-level"]) ||
         ["error", "warn", "info", "debug"].includes(String(opts["agent-network-log-level"])))) {
     errors.push(":agent-network-log-level must be error, warn, info, or debug");
@@ -371,18 +358,8 @@ export function stateErrors(opts: Opts): string[] {
     errors.push(...modelErrors(opts));
   }
   errors.push(...registryErrors(opts));
-  const srcs = opts["digitalocean-http-sources"];
-  if (!missing(srcs) &&
-      (!Array.isArray(srcs) || srcs.length === 0 ||
-       srcs.some((s) => !ipv4Cidr(s)))) {
-    errors.push(":digitalocean-http-sources must be a non-empty list of IPv4 CIDRs");
-  }
   // The override is validated against the provider's rules rather than
   // passed through unread (Compute Name Standard §2).
-  if (!(placeholder(opts["digitalocean-name"]) ||
-        doNameRe.test(String(opts["digitalocean-name"]).trim()))) {
-    errors.push(":digitalocean-name must be letters, digits, dot or dash");
-  }
   return errors;
 }
 
@@ -419,7 +396,7 @@ export function secretErrors(opts: Opts, event: string): string[] {
 
 export function tofuEnv(opts: Opts, slot: string): Record<string, string> {
   switch (slot) {
-    case "provider-compute": return { "do-token": "DIGITALOCEAN_TOKEN" };
+    case "provider-registry": return { "do-token": "DIGITALOCEAN_TOKEN" };
     case "provider-dns": return { "cloudflare-api-token": "CLOUDFLARE_API_TOKEN" };
     case "provider-backend": return entry(opts, "provider-backend")?.tofuEnv ?? {};
     default: return {};

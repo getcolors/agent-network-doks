@@ -1,5 +1,8 @@
 (ns io.github.getcolors.agent-network-doks.tools
   (:require [cheshire.core :as json]
+            [io.github.getcolors.compute-managed :as managed]
+            [io.github.getcolors.compute-runtime :as compute-runtime]
+            [io.github.getcolors.compute-execution :as compute-execution]
             [clojure.java.io :as io]
             [clojure.string :as str]
             [green.cli :as green-cli]
@@ -10,6 +13,7 @@
             [io.github.getcolors.agent-network-doks.validate :as validate]))
 
 (def infrastructure-tool "agent-network-doks-infrastructure")
+(def registry-tool "agent-network-doks-registry")
 (def dns-tool "agent-network-doks-dns")
 (def deploy-tool "agent-network-doks-deploy")
 (def root "io.github.getcolors.agent-network-doks.tools")
@@ -88,21 +92,6 @@
                             {})]
     (when (zero? exit)
       (try (json/parse-string out) (catch Exception _ nil)))))
-
-(defn doks-version-error
-  "Why the pinned DOKS version cannot be created, or nil. DOKS retires old
-  minors, so the slug is checked against the live supported list while
-  failing is still free — a tofu apply that dies half-way leaves a cluster
-  to clean up, this check leaves nothing."
-  [opts]
-  (let [slugs (some->> (get-in (do-api opts "/kubernetes/options") ["options" "versions"])
-                       (map #(get % "slug"))
-                       (remove nil?)
-                       seq)]
-    (when (and slugs (not (some #{(str (:doks-version opts))} slugs)))
-      (str "doks-version " (:doks-version opts)
-           " is not offered by DOKS; currently supported: "
-           (str/join ", " slugs)))))
 
 (defn- account-registries
   "The account's registry names, or nil when the API gave no answer. The
@@ -191,9 +180,6 @@
   a golden. The subnets are outputs, not desired state — everything
   CIDR-derived downstream renders from these files."
   [opts result]
-  (when-let [kc (not-empty (str (output-value result :kubeconfig-b64)))]
-    (write-private! (kubeconfig-path opts)
-                    (String. (.decode (java.util.Base64/getDecoder) ^String kc))))
   (let [host (str (output-value result :registry-host))
         name (str (output-value result :registry-name))
         repo (validate/registry-repository opts)
@@ -208,33 +194,89 @@
                     [:pull-dockerconfig (pull-dockerconfig-path opts)]]]
     (when-let [v (not-empty (str (output-value result k)))]
       (write-private! path v)))
-  (doseq [[k file] [[:cluster-subnet "cluster-subnet"]
-                    [:service-subnet "service-subnet"]]]
-    (when-let [v (not-empty (str (output-value result k)))]
-      (write-private! (str (io/file (state-dir opts) file)) v))))
+)
+
+(defn compute-request [opts]
+  {:legacy_state_keys [(str (:profile opts) "/agent-network-doks-infrastructure.tfstate")]})
+
+(defn- compute-result [opts result]
+  (if-not (contains? #{"planned" "ready" "present" "destroyed"} (:status result))
+    (assoc opts :green/exit 1 :green/err (if (seq (:errors result)) (str/join "\n" (:errors result)) "managed compute lifecycle refused"))
+    (do
+      (when (and (contains? #{"ready" "present"} (:status result)) (:params result))
+        (doseq [[key file] [[:pod_cidr "cluster-subnet"] [:service_cidr "service-subnet"]]]
+          (when-let [value (get-in result [:params key])]
+            (write-private! (str (io/file (state-dir opts) file)) value))))
+      (cond-> (merge opts (:params result) {:green/exit 0 :colors-compute/managed (:params result)})
+        (:kubeconfig_path result) (assoc :colors-compute/kubeconfig-path (:kubeconfig_path result))))))
+
+(defn- compute-json [value indent]
+  (let [padding #(apply str (repeat % " "))]
+    (cond
+      (map? value) (if (empty? value) "{}"
+                      (str "{\n" (str/join ",\n" (for [[key item] (sort-by key value)]
+                                                       (str (padding (+ indent 2)) (json/generate-string key) ": " (compute-json item (+ indent 2)))))
+                           "\n" (padding indent) "}"))
+      (sequential? value) (if (empty? value) "[]"
+                              (str "[\n" (str/join ",\n" (map #(str (padding (+ indent 2)) (compute-json % (+ indent 2))) value)) "\n" (padding indent) "]"))
+      :else (json/generate-string value))))
 
 (defn infrastructure-step [opts]
-  (let [dir (tool-dir opts infrastructure-tool)
+  (try
+    (let [planning (or (= :build (:green/event opts)) (:green/dry-run opts))
+          result (if planning (managed/plan-managed-kubernetes opts (compute-request opts))
+                     (managed/managed-kubernetes opts (compute-request opts)))]
+      (when planning
+        (doseq [[file document] (:documents result)]
+          (let [target (io/file (profile-dir opts) "compute" "managed-kubernetes" (name file))]
+            (io/make-parents target)
+            (spit target (str (compute-json document 0) "\n")))))
+      (compute-result opts result))
+    (catch Exception _ (assoc opts :green/exit 1 :green/err "managed compute lifecycle refused"))))
+
+(defn read-registry-state [opts key]
+  (let [presence (compute-execution/state-presence opts key (into {} (System/getenv)) compute-runtime/run-command true)]
+    (if (= "present" (:status presence)) (compute-runtime/read-state opts key) presence)))
+
+(defn load-registry-facts [opts]
+  (let [result (read-registry-state opts (str (:profile opts) "/agent-network-doks-registry.tfstate"))
+        params (:params result)
+        absent (= "absent" (:status result))
+        valid (and (= "present" (:status result)) (= "application-registry" (:kind params))
+                   (= "digitalocean" (:provider params)) (= (:profile opts) (:profile params) (:repository params))
+                   (boolean? (:adopted params)) (string? (:name params))
+                   (re-matches #"[a-z0-9][a-z0-9-]{1,61}[a-z0-9]" (:name params)))]
+    (if-not (or absent valid)
+      (assoc opts :green/exit 1 :green/err "recorded registry ownership unavailable")
+      (let [params (if absent {:adopted false :name "" :repository (:profile opts)} params)]
+        (write-private! (registry-env-path opts)
+          (str "REGISTRY_HOST=registry.digitalocean.com\n"
+               "REGISTRY_NAME=" (sh-quote (:name params)) "\n"
+               "REGISTRY_REPO=" (sh-quote (:repository params)) "\n"
+               "REGISTRY_ADOPTED=" (:adopted params) "\n"))
+        opts))))
+
+(defn load-infrastructure-step [opts]
+  (if (:green/dry-run opts)
+    (infrastructure-step opts)
+    (let [result (managed/read-managed-kubernetes opts (compute-request opts))]
+      (if (= "destroyed" (:status result))
+        (assoc opts :green/exit 0 :agent-network-doks/already-destroyed true)
+        (let [attached (compute-result opts result)]
+          (if (wf/failed? attached) attached (load-registry-facts attached)))))))
+
+(defn registry-step [opts]
+  (let [dir (tool-dir opts registry-tool)
         data (infrastructure-data opts)
-        registry-template (if (validate/adopt-registry? opts)
-                            "registry-adopt.tf" "registry-create.tf")
-        specs [(spec (template "infrastructure" "main.tf") (str dir "/main.tf") data)
-               (spec (template "infrastructure" registry-template)
-                     (str dir "/registry.tf") data)]
-        preflight-err (when (and (= :create (:green/event opts))
-                                 (not (:green/dry-run opts)))
-                        (or (doks-version-error opts)
-                            (registry-preflight-error opts)))]
-    (if preflight-err
-      (assoc opts :green/exit 1 :green/err preflight-err)
-      (let [result (tofu/tofu-with-spec opts specs
-                                        {:dir dir :env (credential-env opts :provider-compute)})]
-        (cond
-          (wf/failed? result) result
-          (= :build (:green/event opts)) (merge result (fallback-params opts))
-          (= :delete (:green/event opts)) result
-          :else (do (persist-cluster-access! opts result)
-                    (merge result (fallback-params opts) (output-params result))))))))
+        specs [(spec (template "registry" "main.tf") (str dir "/main.tf") data)
+               (spec (template "registry" (if (validate/adopt-registry? opts) "registry-adopt.tf" "registry-create.tf")) (str dir "/registry.tf") data)]
+        preflight-error (when (and (= :create (:green/event opts)) (not (:green/dry-run opts))) (registry-preflight-error opts))]
+    (if preflight-error
+      (assoc opts :green/exit 1 :green/err preflight-error)
+      (let [result (tofu/tofu-with-spec opts specs {:dir dir :env (credential-env opts :provider-registry)})]
+        (when (and (not (wf/failed? result)) (= :create (:green/event opts)) (not (:green/dry-run opts)))
+          (persist-cluster-access! opts result))
+        result))))
 
 ;; -------------------------------------------------------------------- dns
 
@@ -315,6 +357,8 @@
   state files, so nothing in .colors/ or a golden ever holds one."
   [opts]
   (assoc opts
+         :compute-load-balancer-annotations (json/generate-string (into (sorted-map) (:load_balancer_annotations (managed/managed-application-settings opts (:colors-compute/managed opts)))))
+         :compute-pod-cidr (:pod_cidr (managed/managed-application-settings opts (:colors-compute/managed opts)))
          :allowed-model (validate/allowed-model opts)
          :denied-claimed-model (validate/denied-claimed-model opts)
          ;; The LB the cloud controller creates is named after the resolved
@@ -325,8 +369,8 @@
          ;; for Service.spec.loadBalancerSourceRanges, and a space-joined
          ;; form acceptance's LB firewall check rebuilds a JSON array from.
          ;; Unquoted deliberately — the template engine HTML-escapes quotes.
-         :http-sources-yaml (str "[" (str/join ", " (cidrs opts :digitalocean-http-sources)) "]")
-         :http-sources-list (str/join " " (cidrs opts :digitalocean-http-sources))
+         :http-sources-yaml (str "[" (str/join ", " (:http_sources (managed/managed-application-settings opts (:colors-compute/managed opts)))) "]")
+         :http-sources-list (str/join " " (:http_sources (managed/managed-application-settings opts (:colors-compute/managed opts))))
          ;; The escaped base domain for Traefik's HostSNIRegexp: only
          ;; endpoint subdomains ride the TCP passthrough, never the bare
          ;; base name (TCP routers outrank HTTP routers in Traefik).
@@ -363,12 +407,13 @@
 
 (defn deploy-specs [opts]
   (let [dir (tool-dir opts deploy-tool) data (deploy-data opts)]
-    (conj
-     (mapv (fn [[subpath tdir]]
-             (spec (template tdir (.getName (io/file subpath))) (str dir "/" subpath) data))
-           deploy-files)
-     (raw-spec (str dir "/desired.json") (desired-json data))
-     (raw-spec (str dir "/inventory.json") (inventory data)))))
+    (into (mapv (fn [[subpath tdir]]
+                  (spec (template tdir (.getName (io/file subpath))) (str dir "/" subpath) data))
+                deploy-files)
+          (concat (map (fn [[name content]] (raw-spec (str dir "/" name) content))
+                       (managed/managed-application-artifacts opts ["managed-cleanup.sh" "managed-ingress.sh"]))
+                  [(raw-spec (str dir "/desired.json") (desired-json data))
+                   (raw-spec (str dir "/inventory.json") (inventory data))]))))
 
 (defn kubeconfig-error
   "Why the profile's kubeconfig must not be used, or nil: a bearer credential
@@ -467,20 +512,13 @@
               :tunnel-only "confirmed"}))))
 
 (defn teardown-step
-  "Ordered in-cluster teardown before the infrastructure destroy: workloads,
-  PVCs (waiting for the CSI volumes to leave the account), then the LB
-  Service (waiting for the LB to leave the account). Skips cleanly when the
-  cluster is already gone or was never created."
+  "Withdraw application resources before destroying managed compute."
   [opts]
   (let [rendered (sc/scaffold (assoc opts :green/event :create) (deploy-specs opts))
         rendered (assoc rendered :green/event :delete)]
     (if (.exists (io/file (kubeconfig-path opts)))
-      (let [r (run-script rendered "teardown.sh")]
-        ;; A cluster that stopped answering must not block the destroy that
-        ;; removes it: teardown is best-effort, the tofu destroy is the
-        ;; authority.
-        (assoc r :green/exit 0))
-      (assoc rendered :green/exit 0))))
+      (run-script rendered "teardown.sh")
+      (assoc rendered :green/exit 1 :green/err "managed cluster access unavailable"))))
 
 (defn cleanup-step
   "Remove the local per-profile access material after the infrastructure is

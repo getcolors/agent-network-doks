@@ -1,3 +1,6 @@
+import {statePresence,readState as readPublicRegistryState} from "colors-compute-red";
+import {managed_application_artifacts,managed_application_settings,managed_kubeconfig_path} from 'colors-compute-red';
+export {infrastructureStep,loadManagedStep} from './compute.ts';
 // DOKS infrastructure, Cloudflare DNS, and kubectl-driven deploy stages, the
 // port of io.github.getcolors.agent-network-doks.tools.
 
@@ -12,7 +15,7 @@ import type { Opts } from "red/workflow";
 import { StepError, failed } from "red/workflow";
 import * as validate from "./validate.ts";
 
-export const infrastructureTool = "agent-network-doks-infrastructure";
+export const infrastructureTool = "agent-network-doks-registry";
 export const dnsTool = "agent-network-doks-dns";
 export const deployTool = "agent-network-doks-deploy";
 export const templateOpts = PRESERVE_JINJA_DELIMITERS;
@@ -47,7 +50,7 @@ export function profileDir(opts: Opts): string {
 }
 
 export function kubeconfigPath(opts: Opts): string {
-  return join(profileDir(opts), "kubeconfig");
+  return managed_kubeconfig_path(opts);
 }
 
 export function stateDir(opts: Opts): string {
@@ -137,18 +140,6 @@ async function doApi(opts: Opts, path: string): Promise<Record<string, unknown> 
 // old minors, so the slug is checked against the live supported list while
 // failing is still free — a tofu apply that dies half-way leaves a cluster
 // to clean up, this check leaves nothing.
-export async function doksVersionError(opts: Opts): Promise<string | undefined> {
-  const options = (await doApi(opts, "/kubernetes/options"))?.options as
-    { versions?: { slug?: string }[] } | undefined;
-  const slugs = (options?.versions ?? [])
-    .map((v) => v.slug)
-    .filter((s): s is string => s != null);
-  if (slugs.length > 0 && !slugs.includes(String(opts["doks-version"]))) {
-    return `doks-version ${opts["doks-version"]}` +
-      ` is not offered by DOKS; currently supported: ${slugs.join(", ")}`;
-  }
-  return undefined;
-}
 
 // The account's registry names, or undefined when the API gave no answer. The
 // multi-registry listing is tried first; accounts on the older single-registry
@@ -255,10 +246,7 @@ export function pullDockerconfigPath(opts: Opts): string {
 // a golden. The subnets are outputs, not desired state — everything
 // CIDR-derived downstream renders from these files.
 export function persistClusterAccess(opts: Opts, result: Opts): void {
-  const kc = String(outputValue(result, "kubeconfig-b64") ?? "");
-  if (kc.length > 0) {
-    writePrivate(kubeconfigPath(opts), Buffer.from(kc, "base64").toString("utf8"));
-  }
+
   const host = String(outputValue(result, "registry-host") ?? "");
   const name = String(outputValue(result, "registry-name") ?? "");
   const repo = validate.registryRepository(opts);
@@ -275,23 +263,19 @@ export function persistClusterAccess(opts: Opts, result: Opts): void {
     const v = String(outputValue(result, k) ?? "");
     if (v.length > 0) writePrivate(path, v);
   }
-  for (const [k, file] of [["cluster-subnet", "cluster-subnet"],
-                           ["service-subnet", "service-subnet"]] as const) {
-    const v = String(outputValue(result, k) ?? "");
-    if (v.length > 0) writePrivate(join(stateDir(opts), file), v);
-  }
+
 }
 
-export async function infrastructureStep(opts: Opts): Promise<Opts> {
+export async function registryStep(opts: Opts): Promise<Opts> {
   const dir = toolDir(opts, infrastructureTool);
   const data = infrastructureData(opts);
   const registryTemplate = validate.adoptRegistry(opts)
     ? "registry-adopt.tf" : "registry-create.tf";
-  const specs = [spec(template("infrastructure", "main.tf"), `${dir}/main.tf`, data),
-                 spec(template("infrastructure", registryTemplate),
+  const specs = [spec(template("registry", "main.tf"), `${dir}/main.tf`, data),
+                 spec(template("registry", registryTemplate),
                       `${dir}/registry.tf`, data)];
   const preflightErr = opts["red/event"] === "create" && !opts["red/dry-run"]
-    ? (await doksVersionError(opts)) ?? (await registryPreflightError(opts))
+    ? await registryPreflightError(opts)
     : undefined;
   if (preflightErr) return { ...opts, "red/exit": 1, "red/err": preflightErr };
   const result = await tofu.tofuWithSpec(opts, specs, {
@@ -440,8 +424,11 @@ export function desiredJson(opts: Opts): string {
 // credentials reach the scripts through the process environment or private
 // state files, so nothing in .colors/ or a golden ever holds one.
 export function deployData(opts: Opts): Opts {
+  const settings=managed_application_settings(opts,opts['colors-compute/managed']);
   return {
     ...opts,
+    "compute-load-balancer-annotations": JSON.stringify(Object.fromEntries(Object.entries(settings.load_balancer_annotations).sort(([a],[b])=>a.localeCompare(b)))),
+    "compute-pod-cidr": settings.pod_cidr,
     "allowed-model": validate.allowedModel(opts),
     "denied-claimed-model": validate.deniedClaimedModel(opts),
     // The LB the cloud controller creates is named after the resolved
@@ -452,8 +439,8 @@ export function deployData(opts: Opts): Opts {
     // for Service.spec.loadBalancerSourceRanges, and a space-joined
     // form acceptance's LB firewall check rebuilds a JSON array from.
     // Unquoted deliberately — the template engine HTML-escapes quotes.
-    "http-sources-yaml": `[${cidrs(opts, "digitalocean-http-sources").join(", ")}]`,
-    "http-sources-list": cidrs(opts, "digitalocean-http-sources").join(" "),
+    "http-sources-yaml": `[${settings.http_sources.join(", ")}]`,
+    "http-sources-list": settings.http_sources.join(" "),
     // The escaped base domain for Traefik's HostSNIRegexp: only
     // endpoint subdomains ride the TCP passthrough, never the bare
     // base name (TCP routers outrank HTTP routers in Traefik).
@@ -497,6 +484,7 @@ export function deploySpecs(opts: Opts): Spec[] {
   return [
     ...deployFiles.map(([subpath, tdir]) =>
       spec(template(tdir, basename(subpath)), `${dir}/${subpath}`, data)),
+    ...Object.entries(managed_application_artifacts(opts,["managed-cleanup.sh", "managed-ingress.sh"])).map(([name,content])=>rawSpec(`${dir}/${name}`,content)),
     rawSpec(`${dir}/desired.json`, desiredJson(data)),
     rawSpec(`${dir}/inventory.json`, inventory(data)),
   ];
@@ -609,12 +597,13 @@ export async function teardownStep(opts: Opts): Promise<Opts> {
     ...scaffold({ ...opts, "red/event": "create" }, deploySpecs(opts)),
     "red/event": "delete",
   };
-  if (!existsSync(kubeconfigPath(opts))) return { ...rendered, "red/exit": 0 };
+  if (opts["managed/already-destroyed"]) return { ...rendered, "red/exit": 0 };
+  if (!existsSync(kubeconfigPath(opts))) return { ...rendered, "red/exit": 1, "red/err":"managed cluster access unavailable" };
   const r = await runScript(rendered, "teardown.sh");
   // A cluster that stopped answering must not block the destroy that
   // removes it: teardown is best-effort, the tofu destroy is the
   // authority.
-  return { ...r, "red/exit": 0 };
+  return r;
 }
 
 // Remove the local per-profile access material after the infrastructure is
@@ -680,4 +669,18 @@ export async function kubectlMain(stateFile: string, args: string[]): Promise<nu
   }
   const { exit } = await runInherit(["env", `KUBECONFIG=${kc}`, "kubectl", ...args]);
   return exit;
+}
+
+async function readRegistryState(opts:Opts,key:string) {
+ const presence=await statePresence(opts,key,undefined,undefined,true);
+ return presence.status==='present'?await readPublicRegistryState(opts,key):presence;
+}
+
+export async function loadRegistryFacts(opts:Opts,reader:typeof readRegistryState=readRegistryState):Promise<Opts> {
+ const result=await reader(opts,String(opts.profile)+'/agent-network-doks-registry.tfstate');
+ let params:any=result.status==='present'&&'params' in result?result.params??{}:{};
+ if(result.status==='absent')params={adopted:false,name:'',repository:opts.profile};
+ else if(result.status!=='present'||params.kind!=='application-registry'||params.provider!=='digitalocean'||params.profile!==opts.profile||params.repository!==opts.profile||typeof params.adopted!=='boolean'||typeof params.name!=='string'||!/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(params.name))return {...opts,'red/exit':1,'red/err':'recorded registry ownership unavailable'};
+ writePrivate(registryEnvPath(opts),'REGISTRY_HOST=registry.digitalocean.com\n'+'REGISTRY_NAME='+shQuote(params.name)+'\n'+'REGISTRY_REPO='+shQuote(params.repository)+'\n'+'REGISTRY_ADOPTED='+String(params.adopted)+'\n');
+ return opts;
 }

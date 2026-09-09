@@ -365,30 +365,7 @@ done
 # for 80/443 must match desired state. Controller-managed health-check/node
 # rules are tolerated; whole-firewall equality is deliberately NOT demanded.
 
-log "asserting the load balancer firewall matches desired http-sources"
-desired_sources=$(printf '%s\n' <{ http-sources-list }> | jq -R . | jq -cs .)
-lb_json=$(curl -fsS -H "Authorization: Bearer ${COLORS_PAR_DO_TOKEN:?}" \
-  "https://api.digitalocean.com/v2/load_balancers?per_page=200" 2>/dev/null \
-  | jq -c --arg ip "$LB_IP" '.load_balancers[] | select(.ip==$ip)' || true)
-if [[ -z $lb_json ]]; then
-  log "FAIL: no load balancer with address $LB_IP is visible through the DigitalOcean API"
-  exit 1
-fi
-allow=$(jq -c '[.firewall.allow[]? | select(startswith("cidr:")) | ltrimstr("cidr:")] | sort' <<<"$lb_json")
-want=$(jq -c 'sort' <<<"$desired_sources")
-if [[ $want == '["0.0.0.0/0"]' ]]; then
-  # Open desired state: an absent/empty firewall and an explicit 0.0.0.0/0
-  # allow are both the open configuration.
-  if [[ $allow != "[]" && $allow != '["0.0.0.0/0"]' ]]; then
-    log "FAIL: desired http-sources is open but the LB firewall restricts to $allow"
-    exit 1
-  fi
-else
-  if [[ $allow != "$want" ]]; then
-    log "FAIL: the LB firewall client-source allow set is $allow, desired $want"
-    exit 1
-  fi
-fi
+bash "$DIR/managed-ingress.sh" "$LB_IP" <{ http-sources-list }>
 
 # --- attribution and limits --------------------------------------------------
 
