@@ -6,7 +6,7 @@ import * as dryRun from "red/dry-run";
 import { preflight } from "red/lifecycle";
 import * as progress from "red/progress";
 import * as tofu from "red/tofu";
-import { adviceAdd, workflow, type Opts, type WireDecl } from "red/workflow";
+import { adviceAdd, failed, workflow, type Opts, type WireDecl } from "red/workflow";
 import * as tools from "./tools.ts";
 import * as validate from "./validate.ts";
 
@@ -96,8 +96,16 @@ export const sideEffectingSteps = [
   "agent-network-doks/cleanup",
 ];
 
+export function nextSteps(step: string, successors: string[] | null | undefined, opts: Opts): [string, Opts][] {
+  if (failed(opts)) return [];
+  if (opts['managed/already-destroyed']) {
+    return opts['red/event'] === 'delete' && step === 'agent-network-doks/load-managed' ? [['agent-network-doks/cleanup', opts]] : [];
+  }
+  return (successors ?? []).map(successor => [successor, opts]);
+}
+
 function create() {
-  let wf = workflow({ start: "agent-network-doks/start", wireFn });
+  let wf = workflow({ start: "agent-network-doks/start", wireFn, nextFn: nextSteps });
   wf = adviceAdd(wf, "agent-network-doks/registry", "before",
     "io.github.getcolors.agent-network-doks.workflow/backend",
     backendAdvice(tools.infrastructureTool));

@@ -73,3 +73,12 @@ or NetBird's encrypted store, never in rendered templates or the agent pod.
 DOKS runs a NetworkPolicy canary before secrets enter the cluster and verifies
 the load-balancer firewall through the library. Delete reloads recorded registry
 ownership from remote state before removing an adopted repository.
+
+### Repeated deletion after compute retirement
+
+A repeated `delete` with validated retired compute ownership resumes only the
+local generated-file cleanup. It does not require removed SSH keys or contact
+the former hosts, DNS, registry, or other application cloud resources. Failed
+ownership inspection still stops deletion. Local cleanup preserves unrelated
+files and is safe to repeat.
+This includes remaining local kubeconfig, proofs, and lego ACME credentials.
