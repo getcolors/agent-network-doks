@@ -41,7 +41,7 @@ import { homedir } from "node:os";
 // `package-agent-network-doks-red` and break the development symlink at
 // red/red.
 const PINS = {
-  "package-agent-network-doks-red": "github:getcolors/agent-network-doks#c74af22af983dd6eba7fe704bca73e934fe5e42c",
+  "package-agent-network-doks-red": "github:getcolors/agent-network-doks#3f5776ef51452e41041e902c65477eb96358dea2",
   // The Red SDK is a peer of colors-compute-red, not a dependency: a cold
   // cache installs nothing for a peer, so the consumer pins it explicitly, at
   // the commit red/package.json pins. scripts/launcher.sh checks they agree.
